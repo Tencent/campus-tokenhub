@@ -1,0 +1,74 @@
+/*
+ * Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+ * This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+ */
+
+import type { AdminPermission } from '@/lib/admin-principal';
+
+export type AdminAuthorizationDecision =
+	| { kind: 'permission'; permission: AdminPermission }
+	| { kind: 'console_only' }
+	| { kind: 'authenticated' }
+	| { kind: 'deny' };
+
+function readOrWrite(method: string, resource: string): AdminAuthorizationDecision {
+	const suffix = method === 'GET' || method === 'HEAD' ? 'read' : 'write';
+	return { kind: 'permission', permission: `${resource}.${suffix}` as AdminPermission };
+}
+
+export function getAdminAuthorizationDecision(method: string, pathname: string): AdminAuthorizationDecision {
+	const normalizedMethod = method.toUpperCase();
+	if (normalizedMethod === 'OPTIONS') return { kind: 'authenticated' };
+	if (pathname === '/admin' && normalizedMethod === 'GET') return { kind: 'authenticated' };
+	if (pathname.startsWith('/admin/access-keys')) {
+		return { kind: 'console_only' };
+	}
+	if (/^\/admin\/providers\/[^/]+\/api-key$/.test(pathname) && normalizedMethod === 'GET') {
+		return { kind: 'permission', permission: 'providers.secrets.read' };
+	}
+	// 内置授权服务器：同意页（门户）只需要 `oauth.consent`，应用目录与授权管理用 `oauth.read|write`。
+	if (/^\/admin\/oauth\/authorization-requests(?:\/|$)/.test(pathname)) {
+		return { kind: 'permission', permission: 'oauth.consent' };
+	}
+	if (pathname.startsWith('/admin/oauth/')) return readOrWrite(normalizedMethod, 'oauth');
+	if (pathname.startsWith('/admin/providers')) return readOrWrite(normalizedMethod, 'providers');
+	if (pathname.startsWith('/admin/models')) return readOrWrite(normalizedMethod, 'models');
+	if (pathname.startsWith('/admin/routes')) return readOrWrite(normalizedMethod, 'routes');
+	if (/^\/admin\/users\/[^/]+\/(?:logs|audit-logs)(?:\/|$)/.test(pathname)) {
+		return { kind: 'permission', permission: 'logs.read' };
+	}
+	if (/^\/admin\/keys\/[^/]+\/logs(?:\/|$)/.test(pathname)) {
+		return { kind: 'permission', permission: 'logs.read' };
+	}
+	if (/^\/admin\/users\/[^/]+\/(?:keys|oauth-access-tokens)(?:\/|$)/.test(pathname)) {
+		return readOrWrite(normalizedMethod, 'user_keys');
+	}
+	if (pathname.startsWith('/admin/users')) return readOrWrite(normalizedMethod, 'users');
+	if (pathname.startsWith('/admin/keys') || pathname.startsWith('/admin/oauth-access-tokens')) {
+		return readOrWrite(normalizedMethod, 'user_keys');
+	}
+	if (pathname === '/admin/config' || pathname === '/admin/config/') return readOrWrite(normalizedMethod, 'config');
+	if (pathname === '/admin/maintenance' || pathname === '/admin/maintenance/') {
+		return readOrWrite(normalizedMethod, 'maintenance');
+	}
+	if (pathname.startsWith('/admin/business-timezone')) return { kind: 'permission', permission: 'config.read' };
+	if (pathname.startsWith('/admin/analytics') || pathname.startsWith('/admin/stats')) {
+		return { kind: 'permission', permission: 'analytics.read' };
+	}
+	// 门户数据看板：只读聚合，与 analytics 同级
+	if (pathname.startsWith('/admin/portal-usage')) {
+		return { kind: 'permission', permission: 'analytics.read' };
+	}
+	if (pathname.startsWith('/admin/request-logs') || pathname.startsWith('/admin/budget-audit-logs')) {
+		return { kind: 'permission', permission: 'logs.read' };
+	}
+	if (pathname.startsWith('/admin/playground')) {
+		return { kind: 'permission', permission: 'playground.execute' };
+	}
+	if (/^\/admin\/mcp-servers\/[^/]+\/reveal$/.test(pathname) && normalizedMethod === 'GET') {
+		return { kind: 'permission', permission: 'mcp.secrets.read' };
+	}
+
+	if (pathname.startsWith('/admin/mcp-servers')) return readOrWrite(normalizedMethod, 'mcp');
+	return { kind: 'deny' };
+}

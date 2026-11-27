@@ -1,0 +1,109 @@
+'use client';
+
+/*
+ * Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+ * This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+ */
+
+import { Bars3Icon, ChevronRightIcon } from '@heroicons/react/24/outline';
+import BrandMark from '@/components/brand-mark';
+import { usePathname } from '@/ui/navigation';
+import { useTranslations } from 'next-intl';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import LocaleSwitcher from './LocaleSwitcher';
+import MaintenanceBanner from './MaintenanceBanner';
+import Sidebar from './Sidebar';
+import BrandExternalLinks from './BrandExternalLinks';
+import { ADMIN_NAV_GROUPS, matchAdminNavRoute } from '@/lib/admin-nav';
+
+export default function AdminShell({ children }: { children: ReactNode }) {
+  const t = useTranslations('sidebar');
+  const tBrand = useTranslations('brand');
+  const pathname = usePathname();
+  const route = matchAdminNavRoute(pathname);
+  const group = ADMIN_NAV_GROUPS.find((entry) => entry.items.some((item) => item.href === route?.href));
+  const drawerRef = useRef<HTMLDialogElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    drawerRef.current?.close();
+  }, [pathname]);
+
+  useEffect(() => {
+    const desktop = window.matchMedia('(min-width: 1024px)');
+    const closeOnDesktop = () => {
+      if (desktop.matches) drawerRef.current?.close();
+    };
+    desktop.addEventListener('change', closeOnDesktop);
+    return () => desktop.removeEventListener('change', closeOnDesktop);
+  }, []);
+
+  return (
+    <div className="admin-shell flex h-dvh min-w-0 overflow-hidden">
+      <Sidebar />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex h-16 shrink-0 items-center gap-3 border-b border-gray-200 bg-white px-3 text-gray-950 lg:hidden">
+          <button
+            type="button"
+            aria-label={t('openMenu')}
+            aria-expanded={menuOpen}
+            aria-controls="admin-mobile-navigation"
+            onClick={() => {
+              drawerRef.current?.showModal();
+              setMenuOpen(true);
+            }}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-gray-500"
+          >
+            <Bars3Icon className="h-6 w-6" aria-hidden />
+          </button>
+          <BrandMark className="h-8 w-8" />
+          <div className="min-w-0 flex-1 leading-tight">
+            <span className="block truncate text-base font-semibold">{tBrand('wordmark')}</span>
+            <span className="block truncate text-xs text-gray-400">{tBrand('sidebarSubtitle')}</span>
+          </div>
+          <LocaleSwitcher variant="header" />
+        </header>
+        <div className="hidden h-14 shrink-0 items-center gap-2 border-b border-gray-200/80 bg-white px-8 text-xs text-gray-500 lg:flex">
+          {group && <span>{t(`groups.${group.groupKey}`)}</span>}
+          {group && route && <ChevronRightIcon className="h-3 w-3" aria-hidden />}
+          {route && <span className="font-medium text-gray-900">{t(`nav.${route.nameKey}`)}</span>}
+          <div className="ml-auto flex shrink-0 items-center gap-4">
+            <LocaleSwitcher variant="header" />
+            <BrandExternalLinks variant="header" />
+          </div>
+        </div>
+        <MaintenanceBanner />
+        <main className="admin-workspace min-h-0 min-w-0 flex-1 overflow-auto bg-gray-50">
+          {children}
+        </main>
+      </div>
+      <dialog
+        ref={drawerRef}
+        id="admin-mobile-navigation"
+        aria-label={t('navigation')}
+        onClose={() => setMenuOpen(false)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Tab') return;
+          const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), [tabindex="0"]'
+          )).filter((element) => element.getClientRects().length > 0);
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last?.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+          }
+        }}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) drawerRef.current?.close();
+        }}
+        className="fixed inset-y-0 left-0 right-auto m-0 h-dvh max-h-none w-80 max-w-[calc(100vw-3rem)] border-0 bg-gray-100 p-0 text-gray-950 shadow-panel backdrop:bg-black/30"
+      >
+        <Sidebar mobile onNavigate={() => drawerRef.current?.close()} />
+      </dialog>
+    </div>
+  );
+}

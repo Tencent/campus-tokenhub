@@ -1,0 +1,198 @@
+# campus-tokenhub 统一入口：CLB -> 本服务 -> 门户 / 推理网关 / 管理台。
+#
+# 对外前缀（/tokenhub）只出现在这一层：CLB 只需把 /tokenhub/* 整段转发到本服务，
+# 不需要做路径改写，路径细分在这里完成。
+#
+# 前缀是否剥掉，取决于后端会不会自己生成根绝对 URL：
+#   - 门户是 Next：`_next` 静态资源、页面跳转、RSC 请求都写成根绝对路径，
+#     剥前缀会让浏览器去域名根取 `/_next/...`（共享域名下还会撞别的服务），
+#     所以门户**原样透传**，由应用自己的 basePath 认前缀（proxy_pass 不带 URI）。
+#   - 管理台是 Vite SPA + 自定义 Node 入口，Node 侧只认根路径，前缀只存在于
+#     浏览器构建产物与这次 nginx 跳（`ADMIN_UI_PUBLIC_PATH`），所以这里**剥掉一次**
+#     前缀后转发（proxy_pass 末尾带 `/`）。
+#   - 推理网关是纯 HTTP API：客户端用带前缀的 base 拼 `/v1/...`，本身不生成绝对 URL，
+#     所以这里**剥掉**前缀（proxy_pass 末尾带 `/`），网关进程不需要知道前缀。
+#
+# 模板变量（由容器环境注入，见 docker-compose.yml）：
+#   NGINX_PUBLIC_PROTO  后端看到的协议，默认 https（CLB 终止 TLS）。
+#   NGINX_RESOLVER      解析后端容器名的 DNS，默认 127.0.0.11（Docker 内置 DNS）。
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+# CLB 转发时会带 X-Forwarded-Proto；没带时按部署协议兜底。
+map $http_x_forwarded_proto $forwarded_proto {
+    default $http_x_forwarded_proto;
+    ''      ${NGINX_PUBLIC_PROTO};
+}
+
+# 管理台首次访问的默认语言是中文。
+# 管理台自身在缺少 NEXT_LOCALE Cookie 时回落到英文，这个默认值写在它的源码里；
+# 该源码要与上游开源仓同步，本仓不修改，所以在网关这一跳补一次默认 Cookie。
+# 只在浏览器还没有该 Cookie 时下发；用户用语言切换器选择后，管理台会写入同名、
+# 同 Path 的 Cookie，此处条件不成立，不会覆盖用户的选择。
+map $cookie_NEXT_LOCALE $admin_locale_cookie {
+    ''      'NEXT_LOCALE=zh; Path=/; Max-Age=31536000; SameSite=Lax';
+    default '';
+}
+
+# 域名迁移：老域名整站跳到新域名（zhiqi.woa.com）。
+# - 命中 Host 即可，带端口也认（本地用老域名:8088 复现时同样生效）；
+# - 目标是绝对路径，不受本 server 的 `absolute_redirect off` 影响；
+# - 用 308 而不是 302：保留方法与请求体，API 客户端跟随重定向后不会把 POST 变成 GET。
+# 交付给学校时老域名会被打包脚本脱敏成占位域名，学校用自己的域名不会命中这条规则。
+map $http_host $legacy_domain_hit {
+    default                              0;
+    ~^api\.aiedu\.tencent\.com(?::\d+)?$ 1;
+}
+
+# 老域名上并非**整站**都该跳走：模型代理接口（/tokenhub/v1/*）的地址已经固化在
+# 学生端的配置里（WorkBuddy / SDK 的 base_url），跳走等于让存量客户端全部失效。
+# 所以先判「是不是模型接口」，再与 Host 命中组合成最终的跳转开关。
+# 只放行 /tokenhub/v1 及其子路径：/tokenhub/v10、/tokenhub/v1x 这类同名非边界路径仍走跳转。
+map $uri $model_api_path {
+    default             0;
+    ~^/tokenhub/v1(/|$) 1;
+}
+map "$legacy_domain_hit:$model_api_path" $legacy_redirect {
+    default 0;
+    "1:0"   1;
+}
+
+# 后端地址一律用**变量**而不是 upstream 块：
+# nginx 会在**启动时**解析 upstream 里的主机名并缓存结果，容器重建后 IP 变了，
+# 而 nginx 不知道，于是一直往旧 IP 转发，表现为「门户改了代码、重建容器后整站 502，
+# 但容器状态是 healthy」。用变量 + resolver 后，每个请求都按 TTL 重新解析。
+# 代价是 lose keepalive（门户与 nginx 同在 docker 网络，回环开销可忽略）。
+#
+# resolver 用变量注入：Docker 内置 DNS 是 127.0.0.11，裸机部署改成自己的 DNS。
+server {
+    listen 80;
+    server_name _;
+
+    # 容器重建后按 10s TTL 重新解析后端地址（见文件顶部说明）
+    resolver ${NGINX_RESOLVER} valid=10s ipv6=off;
+
+    # 后端地址：`set` 只能写在 server/location 里，不能放在 http 层
+    set $portal_backend  portal:3000;
+    set $member_backend  portal-member:3000;
+    set $proxy_backend   gateway-proxy:8787;
+    set $admin_backend   gateway-admin:8789;
+
+    # 跳转只回相对 Location：本服务在 CLB 后面只看到 http，
+    # 用绝对地址会把用户从 https 带到 http。
+    absolute_redirect off;
+
+    # 老域名入口：必须放在所有 location 之前，命中后直接 308，不进任何后端。
+    # $request_uri 已含原始 query，路径与参数原样带到新域名。
+    # 例外：/tokenhub/v1/* 模型代理接口继续留在老域名（见顶部 $legacy_redirect 的 map）。
+    if ($legacy_redirect) {
+        return 308 https://zhiqi.woa.com$request_uri;
+    }
+
+    # 网关图片/附件、门户导入文件都走这里
+    client_max_body_size 100m;
+
+    # 公共转发头。Host 必须保留外部域名：管理台的 CSRF 会拿它和浏览器 Origin 比对。
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+
+    # 真实客户端 IP：只信任内网来源（CLB / VPC）追加的 X-Forwarded-For。
+    # 随后用 $remote_addr **覆写** XFF：应用侧的限流与审计取最左一段，
+    # 若沿用 $proxy_add_x_forwarded_for（保留并追加），客户端自带的伪造值就会成为最左值，
+    # 换一个伪造 IP 就能换一个限流桶，审计也失去溯源意义。
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive off;
+    set_real_ip_from 10.0.0.0/8;
+    set_real_ip_from 172.16.0.0/12;
+    set_real_ip_from 192.168.0.0/16;
+
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+
+    # 流式输出（SSE）不能缓冲，超时给足；WebSocket 也复用这两个超时
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+
+    # CLB / 容器健康检查
+    location = /nginx-health {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 'ok';
+    }
+
+    # 管理台：/tokenhub/admin/** 剥掉前缀后转给 gateway-admin:8789（Node 只认根路径）
+    # 浏览器构建产物里的资源地址已带 /tokenhub/admin 前缀，所以这里必须剥一次；
+    # 不在这里补尾斜杠：`/tokenhub/admin/` 剥完就是 `/`，Node 直接返回 SPA 入口。
+    location = /tokenhub/admin {
+        # 首次访问下发中文默认语言 Cookie（见文件顶部 map）
+        add_header Set-Cookie $admin_locale_cookie always;
+        # 变量形式的 proxy_pass 不会自动剥前缀，改由 rewrite 显式改写 URI
+        rewrite ^ / break;
+        proxy_pass http://$admin_backend;
+    }
+    location /tokenhub/admin/ {
+        # 首次访问下发中文默认语言 Cookie（见文件顶部 map）
+        add_header Set-Cookie $admin_locale_cookie always;
+        # 管理台持有全站用户与密钥的读写权限，对外暴露时必须收敛来源。
+        # 注意：本服务前面还有 CLB，这里的 $remote_addr 是 **CLB 的地址**，
+        # 所以按客户端 IP 收敛优先用 CLB 的访问控制；要在 nginx 兜一层需先配
+        # `set_real_ip_from <CLB 网段>; real_ip_header X-Forwarded-For;`，
+        # 再放开类似下面的规则：
+        # allow 10.0.0.0/8;
+        # deny all;
+        rewrite ^/tokenhub/admin/?(.*)$ /$1 break;
+        proxy_pass http://$admin_backend;
+    }
+
+    # 门户：/tokenhub/portal/** 原样透传给 portal:3000（应用 basePath=/tokenhub/portal）
+    # 同上：尾斜杠交给 Next 处理，反代别插一脚。
+    location = /tokenhub/portal {
+        proxy_pass http://$portal_backend;
+    }
+    location /tokenhub/portal/ {
+        proxy_pass http://$portal_backend;
+    }
+
+    # 成员自购站：/tokenhub/member/** 原样透传给 portal-member:3000
+    # 与门户同理：Next 自带 basePath，剥前缀会让浏览器去域名根取 _next 资源。
+    # 注意 `/tokenhub/member` 必须写在 `/tokenhub/` 兜底之前——虽然 nginx 前缀匹配
+    # 会优先选更长的 location，但显式靠前更不容易被后人误改。
+    location = /tokenhub/member {
+        proxy_pass http://$member_backend;
+    }
+    location /tokenhub/member/ {
+        proxy_pass http://$member_backend;
+    }
+
+    # 推理网关：/tokenhub/** 剥掉前缀后转给 gateway-proxy:8787/**
+    # 覆盖 /tokenhub/health、/tokenhub/v1/*、以及网关的 WebSocket 实时通道
+    location = /tokenhub {
+        return 308 /tokenhub/;
+    }
+    location /tokenhub/ {
+        rewrite ^/tokenhub/?(.*)$ /$1 break;
+        proxy_pass http://$proxy_backend;
+    }
+
+    # 浏览器会无条件请求根路径 favicon；直接 204，避免落到 `location /` 的 404
+    # 刷控制台报错（线上若在 CLB/Kong 层鉴权，还需在那一层放行该路径）。
+    location = /favicon.ico {
+        access_log off;
+        return 204;
+    }
+
+    # 其它路径不对外暴露
+    location / {
+        return 404;
+    }
+}

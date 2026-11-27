@@ -1,0 +1,14 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"types": ["node", "vite/client"]
+	},
+	"include": [
+		"ui/**/*.ts",
+		"ui/**/*.tsx",
+		"ui/**/*.json",
+		"types/**/*.d.ts"
+	],
+	"exclude": ["node_modules", "node-server-dist", "ui-dist"]
+}

@@ -1,0 +1,1254 @@
+{
+  "version": "2026-11-09",
+  "generatedAt": "2026-11-09T08:39:20.156Z",
+  "provider": {
+    "id": "tencent-tokenhub",
+    "name": "Tencent TokenHub",
+    "kind": "__custom__",
+    "endpoints": {
+      "openai": {
+        "base": "https://tokenhub.tencentmaas.com/v1"
+      }
+    }
+  },
+  "systemConfig": {
+    "BILLING_CURRENCY": "CNY",
+    "BUSINESS_TIMEZONE": "Asia/Shanghai"
+  },
+  "models": [
+    {
+      "id": "deepseek-v4.1-flash",
+      "displayName": "DeepSeek V4.1 Flash",
+      "vendor": "deepseek",
+      "contextWindow": 1024000,
+      "maxTokens": 348000,
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 2,
+            "output_price": 8,
+            "cache_read_price": 0.04
+          }
+        ],
+        "schedule": [
+          {
+            "start": "00:00",
+            "end": "09:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "12:00",
+            "end": "14:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "18:00",
+            "end": "24:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "00:00",
+            "end": "24:00",
+            "factor": 0.5,
+            "days": [
+              6,
+              7
+            ]
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "deepseek-v4.1-flash",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1,
+          "schedule": {
+            "mode": "multiply",
+            "charged": [
+              {
+                "start": "00:00",
+                "end": "09:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "12:00",
+                "end": "14:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "18:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "00:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  6,
+                  7
+                ]
+              }
+            ],
+            "metered": [
+              {
+                "start": "00:00",
+                "end": "09:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "12:00",
+                "end": "14:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "18:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "00:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  6,
+                  7
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "deepseek/deepseek-flash",
+      "displayName": "DeepSeek V4.1 Flash",
+      "vendor": "deepseek",
+      "contextWindow": 1024000,
+      "maxTokens": 384000,
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 2,
+            "output_price": 8,
+            "cache_read_price": 0.04
+          }
+        ],
+        "schedule": [
+          {
+            "start": "00:00",
+            "end": "09:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "12:00",
+            "end": "14:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "18:00",
+            "end": "24:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "00:00",
+            "end": "24:00",
+            "factor": 0.5,
+            "days": [
+              6,
+              7
+            ]
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "deepseek/deepseek-flash",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1,
+          "schedule": {
+            "mode": "multiply",
+            "charged": [
+              {
+                "start": "00:00",
+                "end": "09:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "12:00",
+                "end": "14:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "18:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "00:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  6,
+                  7
+                ]
+              }
+            ],
+            "metered": [
+              {
+                "start": "00:00",
+                "end": "09:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "12:00",
+                "end": "14:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "18:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "00:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  6,
+                  7
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-vision-exp",
+      "displayName": "DeepSeek V4 Flash Vision (Exp)",
+      "vendor": "deepseek",
+      "contextWindow": 1024000,
+      "maxTokens": 384000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 2,
+            "output_price": 8,
+            "cache_read_price": 0.04
+          }
+        ],
+        "schedule": [
+          {
+            "start": "00:00",
+            "end": "09:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "12:00",
+            "end": "14:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "18:00",
+            "end": "24:00",
+            "factor": 0.5,
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "start": "00:00",
+            "end": "24:00",
+            "factor": 0.5,
+            "days": [
+              6,
+              7
+            ]
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "deepseek/deepseek-v4-flash-vision-exp",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1,
+          "schedule": {
+            "mode": "multiply",
+            "charged": [
+              {
+                "start": "00:00",
+                "end": "09:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "12:00",
+                "end": "14:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "18:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "00:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  6,
+                  7
+                ]
+              }
+            ],
+            "metered": [
+              {
+                "start": "00:00",
+                "end": "09:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "12:00",
+                "end": "14:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "18:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              {
+                "start": "00:00",
+                "end": "24:00",
+                "factor": 1,
+                "days": [
+                  6,
+                  7
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "glm-5.2",
+      "displayName": "GLM-5.2",
+      "vendor": "zhipu",
+      "contextWindow": 1000000,
+      "maxTokens": 128000,
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 8,
+            "output_price": 28,
+            "cache_read_price": 2
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "glm-5.2",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "glm-5.3",
+      "displayName": "GLM-5.3",
+      "vendor": "zhipu",
+      "contextWindow": 1024000,
+      "maxTokens": 128000,
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 8,
+            "output_price": 28,
+            "cache_read_price": 2
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "glm-5.3",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "glm-5.3-flash",
+      "displayName": "GLM-5.3 Flash",
+      "vendor": "zhipu",
+      "contextWindow": 1024000,
+      "maxTokens": 128000,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 0.8,
+            "output_price": 2.8,
+            "cache_read_price": 0.23
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "glm-5.3-flash",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "displayName": "GLM-5.3 FlashX",
+      "vendor": "zhipu",
+      "contextWindow": 1024000,
+      "maxTokens": 128000,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 2,
+            "output_price": 7,
+            "cache_read_price": 0.57
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "glm-5.3-flashx",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "hunyuan-turbos-vision-video-20250728",
+      "displayName": "Hunyuan Turbos Vision Video",
+      "vendor": "tencent",
+      "contextWindow": 32000,
+      "maxTokens": 8000,
+      "inputModalities": [
+        "text",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 3,
+            "output_price": 9
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "hunyuan-turbos-vision-video-20250728",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "hy-vision-2.0-instruct",
+      "displayName": "Hunyuan Vision 2.0 Instruct",
+      "vendor": "tencent",
+      "contextWindow": 44000,
+      "maxTokens": 16000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 7.5,
+            "output_price": 17.5
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "hy-vision-2.0-instruct",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "hy3",
+      "displayName": "Hy3",
+      "vendor": "tencent",
+      "contextWindow": 256000,
+      "maxTokens": 128000,
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 1,
+            "output_price": 4,
+            "cache_read_price": 0.25
+          }
+        ]
+      },
+      "recommended": false,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "hy3",
+        "status": "disabled",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "hy4",
+      "displayName": "Hy4",
+      "vendor": "tencent",
+      "contextWindow": 1024000,
+      "maxTokens": 64000,
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 6,
+            "output_price": 18,
+            "cache_read_price": 0.3
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "hy4",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1,
+          "provider_factor": 0.5,
+          "provider_factor_starts_at": "2026-11-05T00:00:00.000Z",
+          "provider_factor_expires_at": "2026-12-31T15:59:59.000Z"
+        }
+      }
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "displayName": "Kimi K2.7 Code",
+      "vendor": "moonshot",
+      "contextWindow": 256000,
+      "maxTokens": 256000,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 6.5,
+            "output_price": 27,
+            "cache_read_price": 1.3
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "kimi-k2.7-code",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "kimi-k3",
+      "displayName": "Kimi K3",
+      "vendor": "moonshot",
+      "contextWindow": 1000000,
+      "maxTokens": 1000000,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 20,
+            "output_price": 100,
+            "cache_read_price": 2
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "kimi-k3",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "displayName": "Kimi K3.1 Pro",
+      "vendor": "moonshot",
+      "contextWindow": 1024000,
+      "maxTokens": 1024000,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 13,
+            "output_price": 68,
+            "cache_read_price": 1.3,
+            "cache_write_price": 13
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "kimi-k3.1-pro",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "kinfra-text-embedding-4b",
+      "displayName": "Kinfra Text Embedding 4B",
+      "vendor": "tencent",
+      "contextWindow": 32000,
+      "maxTokens": null,
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "embedding"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 0.6,
+            "output_price": 0
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "kinfra-text-embedding-4b",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "embeddings",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "kling-image-v3",
+      "displayName": "Kling Image V3",
+      "vendor": "other",
+      "contextWindow": null,
+      "maxTokens": null,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputModalities": [
+        "image"
+      ],
+      "pricingProfile": {
+        "image_billing_mode": "per_image",
+        "image": {
+          "default": 0.2
+        }
+      },
+      "recommended": true,
+      "needsPostpaid": true,
+      "route": {
+        "providerModelName": "kling-image-v3",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "images.generations",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "displayName": "MiMo V2.6 Flash",
+      "vendor": "xiaomi",
+      "contextWindow": 1024000,
+      "maxTokens": 128000,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 1,
+            "output_price": 2,
+            "cache_read_price": 0.02
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "mimo-v2.6-flash",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "mimo-v2.6-pro",
+      "displayName": "MiMo V2.6 Pro",
+      "vendor": "xiaomi",
+      "contextWindow": 1024000,
+      "maxTokens": 128000,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 3,
+            "output_price": 6,
+            "cache_read_price": 0.025
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "mimo-v2.6-pro",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "minimax-m3",
+      "displayName": "MiniMax M3",
+      "vendor": "minimax",
+      "contextWindow": 1000000,
+      "maxTokens": 1000000,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": 524288,
+            "label": "输入≤512k",
+            "input_price": 2.1,
+            "output_price": 8.4,
+            "cache_read_price": 0.42
+          },
+          {
+            "upto": null,
+            "label": "输入>512k",
+            "input_price": 4.2,
+            "output_price": 16.8,
+            "cache_read_price": 0.84
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "minimax-m3",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "minimax-m3.1-flash",
+      "displayName": "MiniMax M3.1 Flash",
+      "vendor": "minimax",
+      "contextWindow": 1024000,
+      "maxTokens": 512000,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "pricingProfile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 1,
+            "output_price": 4,
+            "cache_read_price": 0.1
+          }
+        ]
+      },
+      "recommended": true,
+      "needsPostpaid": false,
+      "route": {
+        "providerModelName": "minimax-m3.1-flash",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "chat",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    },
+    {
+      "id": "seedream-image-v5.0-flash",
+      "displayName": "Seedream Image 5.0 Flash",
+      "vendor": "tencent",
+      "contextWindow": null,
+      "maxTokens": null,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputModalities": [
+        "image"
+      ],
+      "pricingProfile": {
+        "image_billing_mode": "per_image",
+        "image": {
+          "default": 0.12
+        }
+      },
+      "recommended": true,
+      "needsPostpaid": true,
+      "route": {
+        "providerModelName": "seedream-image-v5.0-flash",
+        "status": "active",
+        "priority": 0,
+        "upstreamProtocol": "openai",
+        "upstreamOperation": "images.generations",
+        "priceOverride": {
+          "charged_factor": 1,
+          "metered_factor": 1
+        }
+      }
+    }
+  ]
+}

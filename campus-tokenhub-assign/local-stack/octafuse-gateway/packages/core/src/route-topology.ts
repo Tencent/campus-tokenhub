@@ -1,0 +1,275 @@
+import type { UpstreamProtocol } from "./upstream-protocol";
+import {
+	GEMINI_EMBED_OPERATION,
+	PASSTHROUGH_ROUTE_ADAPTER,
+	ROUTE_ADAPTER_MAPPINGS,
+	isConversionRouteAdapter,
+	isRouteAdapter,
+} from "./adapters/registry";
+
+export {
+	GEMINI_EMBED_OPERATION,
+	DASHSCOPE_FILE_TRANSCRIPTION_PATH,
+	DASHSCOPE_MULTIMODAL_GENERATION_PATH,
+	DASHSCOPE_SPEECH_SYNTHESIZER_PATH,
+	DASHSCOPE_REALTIME_INFERENCE_PATH,
+	DASHSCOPE_REALTIME_SESSION_PATH,
+	DASHSCOPE_TASKS_PATH,
+	LEGACY_DASHSCOPE_FILE_TRANSCRIPTION_PATH,
+	LEGACY_DASHSCOPE_MULTIMODAL_GENERATION_PATH,
+	LEGACY_DASHSCOPE_REALTIME_PATH,
+	LEGACY_DASHSCOPE_SPEECH_SYNTHESIZER_PATH,
+	LEGACY_DASHSCOPE_TASKS_PATH,
+	LEGACY_MINIMAX_IMAGE_GENERATION_PATH,
+	LEGACY_MINIMAX_SPEECH_TO_TEXT_PATH,
+	LEGACY_MINIMAX_T2A_PATH,
+	LEGACY_VOLCENGINE_IMAGE_GENERATIONS_PATH,
+	MINIMAX_IMAGE_GENERATION_PATH,
+	MINIMAX_SPEECH_TO_TEXT_PATH,
+	MINIMAX_T2A_PATH,
+	VOLCENGINE_IMAGE_GENERATIONS_PATH,
+	ELEVENLABS_TEXT_TO_SPEECH_PATH,
+	ELEVENLABS_SPEECH_TO_TEXT_PATH,
+	ELEVENLABS_TEXT_TO_SPEECH_REALTIME_PATH,
+	ELEVENLABS_SPEECH_TO_TEXT_REALTIME_PATH,
+	PASSTHROUGH_ROUTE_ADAPTER,
+	ROUTE_ADAPTER_MAPPINGS,
+	ROUTE_ADAPTERS,
+	isConversionRouteAdapter,
+	isRouteAdapter,
+	type ConversionRouteAdapter,
+	type RouteAdapter,
+	type RouteAdapterMapping,
+} from "./adapters/registry";
+
+/** Gemini generate-content family (stream + non-stream). */
+export const GEMINI_GENERATE_OPERATION = 'models.generate';
+
+/** Legacy Gemini wire-action operation names (pre-v2.2.0). */
+export const GEMINI_LEGACY_GENERATE_OPERATIONS = [
+	'generateContent',
+	'streamGenerateContent',
+] as const;
+
+/** Stable request-operation identifiers. `*` is reserved for migrated legacy surfaces/targets. */
+export const REQUEST_OPERATIONS_BY_PROTOCOL = {
+	openai: [
+		"chat",
+		"responses",
+		"images.generations",
+		"images.edits",
+		"audio.transcriptions",
+		"audio.speech",
+		"embeddings",
+	],
+	anthropic: ['messages'],
+	gemini: [GEMINI_GENERATE_OPERATION, GEMINI_EMBED_OPERATION],
+	dashscope: [
+		"audio.transcriptions",
+		"audio.transcriptions.multimodal",
+		"audio.transcriptions.async",
+		"audio.transcriptions.realtime.inference",
+		"audio.transcriptions.realtime.session",
+		"audio.speech",
+		"audio.speech.stream",
+		"audio.speech.multimodal",
+		"audio.speech.realtime.inference",
+		"audio.speech.realtime.session",
+		"images.generations.multimodal",
+	],
+	/**
+	 * 公开入口：`POST /minimax/v1/speech_to_text`、`POST /minimax/v1/t2a_v2`、
+	 * `POST /minimax/v1/image_generation`（旧 `/v1/minimax/*` 仍作别名）。adapter 都是 passthrough。
+	 * `audio.speech` 同时覆盖非流式 JSON 和 `stream: true` 的 SSE。
+	 */
+	minimax: ['audio.transcriptions', 'audio.speech', 'images.generations'],
+	/**
+	 * 公开入口：`POST /volcengine/api/v3/images/generations`（旧 `/v1/volcengine/images/generations` 仍作别名）。
+	 * 非流式 JSON 与 `stream: true` 的 SSE 共用这条路径，adapter 是 passthrough。
+	 */
+	volcengine: ['images.generations'],
+	/**
+	 * 公开入口：`POST /elevenlabs/v1/text-to-speech/:voice_id[/stream][/with-timestamps]`、
+	 * `POST /elevenlabs/v1/speech-to-text`；WebSocket：
+	 * `GET /elevenlabs/v1/text-to-speech/:voice_id/stream-input`、`GET /elevenlabs/v1/speech-to-text/realtime`
+	 * （升级前用 query `model_id` 选路由）。adapter 都是 passthrough。
+	 * TTS 四种 HTTP 变体共用 `audio.speech`。
+	 */
+	elevenlabs: [
+		'audio.transcriptions',
+		'audio.transcriptions.realtime',
+		'audio.speech',
+		'audio.speech.realtime',
+	],
+} as const satisfies Record<UpstreamProtocol, readonly string[]>;
+
+export type RequestOperation =
+	| (typeof REQUEST_OPERATIONS_BY_PROTOCOL)[UpstreamProtocol][number]
+	| "*";
+
+export const LEGACY_WILDCARD_OPERATION: RequestOperation = "*";
+
+/**
+ * 校验 request surface 与 upstream target 是否由 adapter 明确定义。
+ * passthrough 只允许同协议且 operation 相同（`*` 保留迁移兼容）。
+ */
+export function isRouteAdapterCompatible(input: {
+	adapter: string;
+	requestProtocol: UpstreamProtocol;
+	requestOperation: string;
+	upstreamProtocol: UpstreamProtocol;
+	upstreamOperation: string;
+}): boolean {
+	if (!isRouteAdapter(input.adapter)) return false;
+	if (input.adapter === PASSTHROUGH_ROUTE_ADAPTER) {
+		return (
+			input.requestProtocol === input.upstreamProtocol &&
+			(input.requestOperation === LEGACY_WILDCARD_OPERATION ||
+				input.upstreamOperation === LEGACY_WILDCARD_OPERATION ||
+				input.requestOperation === input.upstreamOperation)
+		);
+	}
+	if (!isConversionRouteAdapter(input.adapter)) return false;
+	const mapping = ROUTE_ADAPTER_MAPPINGS[input.adapter];
+	return (
+		input.requestProtocol === mapping.requestProtocol &&
+		input.requestOperation === mapping.requestOperation &&
+		input.upstreamProtocol === mapping.upstreamProtocol &&
+		(input.upstreamOperation === LEGACY_WILDCARD_OPERATION ||
+			input.upstreamOperation === mapping.upstreamOperation)
+	);
+}
+
+export function isRequestOperationForProtocol(
+	protocol: UpstreamProtocol,
+	operation: string
+): boolean {
+	return (
+		operation === LEGACY_WILDCARD_OPERATION ||
+		(REQUEST_OPERATIONS_BY_PROTOCOL[protocol] as readonly string[]).includes(
+			operation
+		)
+	);
+}
+
+/**
+ * 上游 operation 可以是公开请求 operation，也可以只出现在转换适配器的上游侧。
+ * MiniMax `audio.transcriptions` 同时是公开透传入口和 `minimax-asr-file` 的上游端点。
+ */
+export function isUpstreamOperationForProtocol(
+	protocol: UpstreamProtocol,
+	operation: string
+): boolean {
+	if (isRequestOperationForProtocol(protocol, operation)) return true;
+	return Object.values(ROUTE_ADAPTER_MAPPINGS).some(
+		(mapping) =>
+			mapping.upstreamProtocol === protocol && mapping.upstreamOperation === operation
+	);
+}
+
+/**
+ * DashScope 实时 ASR 有两套不兼容的生命周期：Qwen3-ASR 使用 session，
+ * Fun-ASR/Qwen-Audio/Paraformer 使用 inference。供应商模型名是唯一可靠的上游标识。
+ */
+export function isDashScopeRealtimeAsrModelOperationCompatible(
+	providerModelName: string,
+	operation: string
+): boolean {
+	if (!operation.startsWith("audio.transcriptions.realtime.")) return true;
+	const model = providerModelName.trim().toLowerCase();
+	if (!model) return true;
+	const isQwen3SessionModel =
+		model === "qwen3-asr-flash-realtime" ||
+		model.startsWith("qwen3-asr-flash-realtime-");
+	return operation.endsWith(".session")
+		? isQwen3SessionModel
+		: !isQwen3SessionModel;
+}
+
+export function normalizeRouteOperation(raw: unknown): string {
+	const operation = typeof raw === "string" ? raw.trim() : "";
+	return operation || LEGACY_WILDCARD_OPERATION;
+}
+
+/**
+ * Map legacy Gemini operations to the canonical family; non-gemini / unknown values (incl. `*`) pass through.
+ */
+export function canonicalizeRequestOperation(protocol: string, operation: string): string {
+	const op = operation.trim();
+	if (protocol.trim().toLowerCase() !== 'gemini') return op;
+	if (
+		op === GEMINI_GENERATE_OPERATION ||
+		(GEMINI_LEGACY_GENERATE_OPERATIONS as readonly string[]).includes(op)
+	) {
+		return GEMINI_GENERATE_OPERATION;
+	}
+	return op;
+}
+
+/**
+ * Alias priority when multiple legacy keys collapse to the same canonical key:
+ * `models.generate` (2) > `generateContent` (1) > `streamGenerateContent` (0); others -1.
+ * Comparison is case-insensitive.
+ */
+export function requestOperationAliasRank(operation: string): number {
+	const op = operation.trim().toLowerCase();
+	if (op === GEMINI_GENERATE_OPERATION.toLowerCase()) return 2;
+	if (op === 'generatecontent') return 1;
+	if (op === 'streamgeneratecontent') return 0;
+	return -1;
+}
+
+export function effectiveUpstreamOperation(
+	configuredOperation: string | null | undefined,
+	requestOperation: string,
+	adapter?: string | null
+): string {
+	const configured = normalizeRouteOperation(configuredOperation);
+	if (configured !== LEGACY_WILDCARD_OPERATION) return configured;
+	if (adapter && isConversionRouteAdapter(adapter)) {
+		return ROUTE_ADAPTER_MAPPINGS[adapter].upstreamOperation;
+	}
+	return requestOperation;
+}
+
+export interface RoutePoolRow {
+	id: string;
+	model_id: string;
+	route_group: string;
+	name: string;
+	strategy: string | null;
+	/** JSON map: {"10":"hash_affinity","0":"weight_priority"} — per-priority-tier overrides */
+	tier_strategies?: string | null;
+	/** Provider sticky routing (0/1 or boolean depending on driver) */
+	sticky_enabled?: boolean | number | null;
+	sticky_idle_ttl_seconds?: number | null;
+	/** Bumped when sticky config changes to invalidate bindings */
+	sticky_epoch?: number | null;
+	status: string;
+	created_at?: string;
+	updated_at?: string;
+}
+
+export interface ModelSurfaceRow {
+	id: string;
+	model_id: string;
+	route_group: string;
+	request_protocol: string;
+	request_operation: string;
+	route_pool_id: string;
+	status: string;
+	created_at?: string;
+	updated_at?: string;
+}
+
+export type ResolvedModelSurfaceRow = ModelSurfaceRow & {
+	pool_name: string;
+	pool_strategy: string | null;
+	/** JSON map from `route_pools.tier_strategies` */
+	pool_tier_strategies: string | null;
+	pool_status: string;
+	/** Provider sticky routing from `route_pools` */
+	pool_sticky_enabled?: boolean | number | null;
+	pool_sticky_idle_ttl_seconds?: number | null;
+	pool_sticky_epoch?: number | null;
+};

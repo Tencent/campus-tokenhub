@@ -1,0 +1,604 @@
+import assert from 'node:assert/strict';
+import { beforeEach, describe, it } from 'node:test';
+import type { GatewayRepositories } from '@octafuse/core';
+import {
+	parsePricingProfile,
+	resolveImageBillingMode,
+	resetUserChargedCostFactorModeCacheForTests,
+	USER_CHARGED_COST_FACTOR_MODE_KEY,
+} from '@octafuse/core';
+import {
+	estimateImageBudgetPrecheck,
+	estimateImageCosts,
+	shouldChargeUncertainImageResult,
+	withClientAbortPrecheckAudit,
+	withUncertainResultAudit,
+} from './image-usage-charge';
+
+const TOKEN_PROFILE = JSON.stringify({
+	tiers: [
+		{
+			upto: null,
+			input_price: 5,
+			output_price: 0,
+			cache_read_price: 1.25,
+			image_input_price: 8,
+			image_input_cache_price: 2,
+			image_output_price: 30,
+		},
+	],
+});
+
+const LEGACY_ONLY_PROFILE = JSON.stringify({
+	tiers: [{ upto: null, input_price: 0, output_price: 0 }],
+	image: {
+		default: 0.053,
+		by_quality_size: {
+			'high:1536x1024': 0.165,
+			'medium:1024x1024': 0.053,
+		},
+	},
+});
+
+const PER_IMAGE_PROFILE = JSON.stringify({
+	image_billing_mode: 'per_image',
+	image: {
+		default: 0.04,
+		by_quality_size: { 'high:1536x1024': 0.165 },
+		input: {
+			default: 0.01,
+			by_quality_size: { 'high:1024x1024': 0.02 },
+		},
+	},
+});
+
+const LLM_PROFILE = JSON.stringify({
+	tiers: [{ upto: null, input_price: 2, output_price: 12, cache_read_price: 0.2 }],
+});
+
+function mockRepos(timezone?: string, extra?: Record<string, string | null>): GatewayRepositories {
+	return {
+		systemConfig: {
+			getConfig: async (key: string) => {
+				if (key === 'BUSINESS_TIMEZONE') return timezone ?? null;
+				if (extra && Object.prototype.hasOwnProperty.call(extra, key)) return extra[key] ?? null;
+				return null;
+			},
+		},
+	} as unknown as GatewayRepositories;
+}
+
+describe('estimateImageCosts', () => {
+	beforeEach(() => {
+		resetUserChargedCostFactorModeCacheForTests();
+	});
+	it('token path: actual usage dominates charged cost (not fixed per-image)', async () => {
+		const costs = await estimateImageCosts(
+			mockRepos(),
+			{
+				modelPricingProfileJson: TOKEN_PROFILE,
+				routePriceOverrideJson: null,
+				quality: 'high',
+				size: '1536x1024',
+				imageCount: 1,
+			},
+			{
+				usage: {
+					text_tokens: 20,
+					cached_text_tokens: 0,
+					image_input_tokens: 0,
+					cached_image_input_tokens: 0,
+					text_output_tokens: 0,
+					image_output_tokens: 5500,
+					total_tokens: 5520,
+					raw_usage: '{"output_tokens":5500}',
+				},
+			}
+		);
+		assert.equal(costs.billingKind, 'image_tokens');
+		assert.ok(Math.abs(costs.chargedCost - 0.1651) < 1e-6);
+		assert.equal(costs.logTokens.outputTokens, 5500);
+		assert.equal(costs.logImageCounts?.outputImageCount, 0);
+		assert.ok(costs.pricingAuditJson.includes('"kind":"image_tokens"'));
+	});
+
+	it('token path precheck is conservative vs short generations', async () => {
+		const precheck = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: TOKEN_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'high',
+			size: '1536x1024',
+			imageCount: 1,
+			isEdit: false,
+		});
+		const shortGen = await estimateImageCosts(
+			mockRepos(),
+			{
+				modelPricingProfileJson: TOKEN_PROFILE,
+				routePriceOverrideJson: null,
+				quality: 'high',
+				size: '1536x1024',
+				imageCount: 1,
+			},
+			{
+				usage: {
+					text_tokens: 15,
+					cached_text_tokens: 0,
+					image_input_tokens: 0,
+					cached_image_input_tokens: 0,
+					text_output_tokens: 0,
+					image_output_tokens: 5500,
+					total_tokens: 5515,
+					raw_usage: null,
+				},
+			}
+		);
+		assert.equal(precheck.billingKind, 'image_tokens');
+		assert.ok(precheck.chargedCost >= shortGen.chargedCost);
+	});
+
+	it('legacy per-image-only profile no longer bills', async () => {
+		const costs = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: LEGACY_ONLY_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'high',
+			size: '1536x1024',
+			imageCount: 1,
+		});
+		assert.equal(costs.billingKind, 'image_tokens');
+		assert.equal(costs.chargedCost, 0);
+		assert.ok(costs.pricingAuditJson.includes('missing_image_pricing'));
+	});
+
+	it('explicit per_image mode bills by output count', async () => {
+		const costs = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'high',
+			size: '1536x1024',
+			imageCount: 1,
+			operation: 'generations',
+		});
+		assert.equal(costs.billingKind, 'image_per_image');
+		assert.ok(Math.abs(costs.chargedCost - 0.165) < 1e-9);
+		assert.equal(costs.unitPrice, 0.165);
+		assert.equal(costs.logTokens.totalTokens, 0);
+		assert.equal(costs.logImageCounts?.outputImageCount, 1);
+		assert.equal(costs.logImageCounts?.inputImageCount, 0);
+		assert.ok(costs.pricingAuditJson.includes('"kind":"image_per_image"'));
+		assert.ok(costs.pricingAuditJson.includes('"output_unit_price":0.165'));
+	});
+
+	it('per_image adds input.default × referenceCount', async () => {
+		const costs = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'high',
+			size: '1536x1024',
+			imageCount: 1,
+			referenceCount: 2,
+		});
+		assert.equal(costs.billingKind, 'image_per_image');
+		// output high:1536x1024 = 0.165; input 无匹配档 → default 0.01 × 2 refs
+		assert.ok(Math.abs(costs.chargedCost - (0.165 + 0.01 * 2)) < 1e-9);
+		assert.equal(costs.logImageCounts?.inputImageCount, 2);
+		assert.equal(costs.logImageCounts?.outputImageCount, 1);
+	});
+
+	it('per_image override schedule uses window factor instead of multiplying', async () => {
+		const allDay = [{ start: '00:00', end: '24:00', factor: 2 }];
+		const multiply = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: JSON.stringify({
+				charged_factor: 1.5,
+				metered_factor: 1,
+				schedule: { charged: allDay, metered: allDay },
+			}),
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+		});
+		const override = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: JSON.stringify({
+				charged_factor: 1.5,
+				metered_factor: 1,
+				schedule: { mode: 'override', charged: allDay, metered: allDay },
+			}),
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+		});
+		const base = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+		});
+		assert.ok(Math.abs(multiply.chargedCost - base.chargedCost * 3) < 1e-9);
+		assert.ok(Math.abs(override.chargedCost - base.chargedCost * 2) < 1e-9);
+	});
+
+	it('stacks official catalog schedule before route factors', async () => {
+		const profile = JSON.stringify({
+			image_billing_mode: 'per_image',
+			image: { default: 0.04 },
+			schedule: [{ start: '23:00', end: '02:00', factor: 0.5 }],
+		});
+		const route = JSON.stringify({
+			charged_factor: 1,
+			metered_factor: 1,
+			schedule: {
+				mode: 'override',
+				charged: [{ start: '23:00', end: '02:00', factor: 0.8 }],
+				metered: [{ start: '23:00', end: '02:00', factor: 1.2 }],
+			},
+		});
+		const hit = await estimateImageCosts(mockRepos('Asia/Shanghai'), {
+			modelPricingProfileJson: profile,
+			routePriceOverrideJson: route,
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+			requestStartedAtMs: Date.parse('2026-07-10T15:30:00.000Z'),
+		});
+		assert.equal(hit.standardCost, 0.02);
+		assert.equal(hit.chargedCost, 0.016);
+		assert.equal(hit.meteredCost, 0.024);
+		assert.equal(hit.chargedCost / hit.standardCost, 0.8);
+		const miss = await estimateImageCosts(mockRepos('Asia/Shanghai'), {
+			modelPricingProfileJson: profile,
+			routePriceOverrideJson: route,
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+			requestStartedAtMs: Date.parse('2026-07-10T18:30:00.000Z'),
+		});
+		assert.equal(miss.standardCost, 0.04);
+		assert.equal(miss.chargedCost, 0.04);
+	});
+
+	it('applies user charged cost factor after route charged cost', async () => {
+		const route = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: JSON.stringify({ charged_factor: 2, metered_factor: 1 }),
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+			catalogModelId: 'gpt-image-1',
+		});
+		const discounted = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: JSON.stringify({ charged_factor: 2, metered_factor: 1 }),
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+			catalogModelId: 'gpt-image-1',
+			userChargedCostFactorsJson: JSON.stringify({ 'gpt-image-1': 0.5 }),
+		});
+		assert.ok(Math.abs(discounted.chargedCost - route.chargedCost * 0.5) < 1e-9);
+		assert.equal(discounted.meteredCost, route.meteredCost);
+		const audit = JSON.parse(discounted.pricingAuditJson) as { user_charged_factor: number };
+		assert.equal(audit.user_charged_factor, 0.5);
+	});
+
+	it('min mode takes the smaller of route and user charged factors', async () => {
+		const repos = mockRepos(undefined, { [USER_CHARGED_COST_FACTOR_MODE_KEY]: 'min' });
+		const route = await estimateImageCosts(repos, {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: JSON.stringify({ charged_factor: 2, metered_factor: 1 }),
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+			catalogModelId: 'gpt-image-1',
+		});
+		const discounted = await estimateImageCosts(repos, {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: JSON.stringify({ charged_factor: 2, metered_factor: 1 }),
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+			catalogModelId: 'gpt-image-1',
+			userChargedCostFactorsJson: JSON.stringify({ 'gpt-image-1': 0.5 }),
+		});
+		assert.ok(Math.abs(discounted.chargedCost - route.chargedCost * (0.5 / 2)) < 1e-9);
+		assert.equal(discounted.meteredCost, route.meteredCost);
+		const audit = JSON.parse(discounted.pricingAuditJson) as {
+			user_charged_factor: number;
+			user_charged_factor_mode: string;
+			combined_charged_factor: number;
+		};
+		assert.equal(audit.user_charged_factor, 0.5);
+		assert.equal(audit.user_charged_factor_mode, 'min');
+		assert.equal(audit.combined_charged_factor, 0.5);
+	});
+
+	it('per_image by_size 2k hits the catalog unit price', async () => {
+		const profile = JSON.stringify({
+			image_billing_mode: 'per_image',
+			image: {
+				default: 0.25,
+				by_size: { '1k': 0.25, '2k': 0.5 },
+			},
+		});
+		const costs = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: profile,
+			routePriceOverrideJson: null,
+			quality: 'auto',
+			size: '2k',
+			imageCount: 1,
+		});
+		assert.equal(costs.billingKind, 'image_per_image');
+		assert.ok(Math.abs(costs.chargedCost - 0.5) < 1e-9);
+		const audit = JSON.parse(costs.pricingAuditJson) as { size: string };
+		assert.equal(audit.size, '2k');
+	});
+
+	it('per_image applies charged_factor from route override', async () => {
+		const base = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+		});
+		const doubled = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: JSON.stringify({ charged_factor: 2, metered_factor: 1 }),
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+		});
+		assert.equal(base.billingKind, 'image_per_image');
+		assert.ok(Math.abs(doubled.chargedCost - base.chargedCost * 2) < 1e-9);
+	});
+
+	it('LLM profile without image prices yields zero image cost', async () => {
+		const costs = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: LLM_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+		});
+		assert.equal(costs.chargedCost, 0);
+	});
+
+	it('budget precheck uses max charged_factor across failover routes', async () => {
+		const cheap = JSON.stringify({ charged_factor: 1, metered_factor: 1 });
+		const expensive = JSON.stringify({ charged_factor: 2, metered_factor: 1 });
+		const withCheapOnly = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: TOKEN_PROFILE,
+			routePriceOverrideJson: cheap,
+			quality: 'high',
+			size: '1536x1024',
+			imageCount: 1,
+		});
+		const precheck = await estimateImageBudgetPrecheck(
+			mockRepos(),
+			{
+				modelPricingProfileJson: TOKEN_PROFILE,
+				quality: 'high',
+				size: '1536x1024',
+				imageCount: 1,
+			},
+			[cheap, expensive]
+		);
+		assert.ok(precheck.chargedCost > withCheapOnly.chargedCost);
+		assert.ok(Math.abs(precheck.chargedCost - withCheapOnly.chargedCost * 2) < 1e-6);
+	});
+
+	it('auto/unknown quality precheck uses upper-bound output tokens', async () => {
+		const auto = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: TOKEN_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'auto',
+			size: '1024x1024',
+			imageCount: 1,
+		});
+		const high = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: TOKEN_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'high',
+			size: '1024x1024',
+			imageCount: 1,
+		});
+		const medium = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: TOKEN_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'medium',
+			size: '1024x1024',
+			imageCount: 1,
+		});
+		assert.ok(Math.abs(auto.chargedCost - high.chargedCost) < 1e-9);
+		assert.ok(auto.chargedCost > medium.chargedCost);
+	});
+});
+
+describe('missing upstream usage fallback', () => {
+	it('precheck fallback bills conservatively and audits reason', async () => {
+		const fallback = await estimateImageCosts(
+			mockRepos(),
+			{
+				modelPricingProfileJson: TOKEN_PROFILE,
+				routePriceOverrideJson: null,
+				quality: 'high',
+				size: '1536x1024',
+				imageCount: 1,
+			},
+			{
+				auditExtra: { usage_source: 'precheck_fallback', error: 'missing_upstream_usage' },
+			}
+		);
+		assert.ok(fallback.chargedCost > 0);
+		assert.ok(fallback.pricingAuditJson.includes('missing_upstream_usage'));
+		assert.ok(fallback.pricingAuditJson.includes('precheck_fallback'));
+	});
+});
+
+describe('uncertain result precheck audit', () => {
+	it('tags budget precheck with client_abort_precheck without changing cost', async () => {
+		const precheck = await estimateImageBudgetPrecheck(
+			mockRepos(),
+			{
+				modelPricingProfileJson: TOKEN_PROFILE,
+				quality: 'high',
+				size: '1024x1024',
+				imageCount: 1,
+				isEdit: false,
+			},
+			[null]
+		);
+		assert.ok(precheck.chargedCost > 0);
+		const audited = withClientAbortPrecheckAudit(precheck);
+		assert.equal(audited.chargedCost, precheck.chargedCost);
+		assert.equal(audited.meteredCost, precheck.meteredCost);
+		assert.ok(audited.pricingAuditJson.includes('client_abort_precheck'));
+	});
+
+	it('supports gateway_timeout_precheck audit source', async () => {
+		const precheck = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: null,
+			quality: 'auto',
+			size: 'auto',
+			imageCount: 1,
+		});
+		const audited = withUncertainResultAudit(precheck, 'gateway_timeout_precheck');
+		assert.equal(audited.chargedCost, precheck.chargedCost);
+		assert.ok(audited.pricingAuditJson.includes('gateway_timeout_precheck'));
+	});
+});
+
+describe('shouldChargeUncertainImageResult', () => {
+	const tokenProfile = parsePricingProfile(TOKEN_PROFILE);
+	const perImageRequested = parsePricingProfile(PER_IMAGE_PROFILE);
+	const perImageZero = parsePricingProfile(
+		JSON.stringify({
+			image_billing_mode: 'per_image',
+			image: { default: 0.04, uncertain_result_policy: 'zero' },
+		})
+	);
+	const tokenPrecheck = { chargedCost: 0.98 };
+
+	it('does not charge token-mode client abort even when precheck > 0', () => {
+		assert.equal(
+			shouldChargeUncertainImageResult({
+				status: 'error',
+				mode: resolveImageBillingMode(tokenProfile),
+				profile: tokenProfile,
+				imageAbortReason: 'client_abort',
+				clientAbortPrecheck: tokenPrecheck,
+			}),
+			false
+		);
+	});
+
+	it('does not charge token-mode gateway timeout even when precheck > 0', () => {
+		assert.equal(
+			shouldChargeUncertainImageResult({
+				status: 'error',
+				mode: resolveImageBillingMode(tokenProfile),
+				profile: tokenProfile,
+				imageAbortReason: 'gateway_timeout',
+				clientAbortPrecheck: tokenPrecheck,
+			}),
+			false
+		);
+	});
+
+	it('does not charge explicit upstream 5xx / network 502 (error without abort)', () => {
+		assert.equal(
+			shouldChargeUncertainImageResult({
+				status: 'error',
+				mode: resolveImageBillingMode(tokenProfile),
+				profile: tokenProfile,
+				imageAbortReason: null,
+				clientAbortPrecheck: null,
+			}),
+			false
+		);
+		assert.equal(
+			shouldChargeUncertainImageResult({
+				status: 'error',
+				mode: resolveImageBillingMode(perImageRequested),
+				profile: perImageRequested,
+				imageAbortReason: null,
+				clientAbortPrecheck: null,
+			}),
+			false
+		);
+	});
+
+	it('does not charge per_image abort even when uncertain_result_policy is requested', () => {
+		assert.equal(
+			shouldChargeUncertainImageResult({
+				status: 'error',
+				mode: resolveImageBillingMode(perImageRequested),
+				profile: perImageRequested,
+				imageAbortReason: 'client_abort',
+				clientAbortPrecheck: { chargedCost: 0.04 },
+			}),
+			false
+		);
+	});
+
+	it('does not charge per_image abort when uncertain_result_policy is zero', () => {
+		assert.equal(
+			shouldChargeUncertainImageResult({
+				status: 'error',
+				mode: resolveImageBillingMode(perImageZero),
+				profile: perImageZero,
+				imageAbortReason: 'gateway_timeout',
+				clientAbortPrecheck: { chargedCost: 0.04 },
+			}),
+			false
+		);
+	});
+});
+
+describe('provider_factor on image routes', () => {
+	const override = JSON.stringify({
+		provider_factor: 0.5,
+		provider_factor_starts_at: '2026-10-01T00:00:00.000Z',
+		provider_factor_expires_at: '2026-11-01T00:00:00.000Z',
+		charged_factor: 1,
+		metered_factor: 0.68,
+	});
+
+	it('multiplies charged and metered while standard stays at catalog price', async () => {
+		const costs = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: override,
+			quality: 'high',
+			size: '1536x1024',
+			imageCount: 1,
+			operation: 'generations',
+			requestStartedAtMs: Date.parse('2026-10-15T00:00:00.000Z'),
+		});
+		assert.ok(Math.abs(costs.standardCost - 0.165) < 1e-9);
+		assert.ok(Math.abs(costs.chargedCost - 0.165 * 0.5) < 1e-9);
+		assert.ok(Math.abs(costs.meteredCost - 0.165 * 0.5 * 0.68) < 1e-9);
+		const audit = JSON.parse(costs.pricingAuditJson) as {
+			provider_factor: { effective: number; active: boolean };
+		};
+		assert.equal(audit.provider_factor.active, true);
+		assert.equal(audit.provider_factor.effective, 0.5);
+	});
+
+	it('drops the official factor after it expires', async () => {
+		const costs = await estimateImageCosts(mockRepos(), {
+			modelPricingProfileJson: PER_IMAGE_PROFILE,
+			routePriceOverrideJson: override,
+			quality: 'high',
+			size: '1536x1024',
+			imageCount: 1,
+			operation: 'generations',
+			requestStartedAtMs: Date.parse('2026-11-01T00:00:00.000Z'),
+		});
+		assert.ok(Math.abs(costs.standardCost - 0.165) < 1e-9);
+		assert.ok(Math.abs(costs.chargedCost - 0.165) < 1e-9);
+		assert.ok(Math.abs(costs.meteredCost - 0.165 * 0.68) < 1e-9);
+	});
+});

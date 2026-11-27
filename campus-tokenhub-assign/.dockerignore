@@ -1,0 +1,23 @@
+node_modules
+.next
+.git
+.gitignore
+coverage
+tests
+openspec
+# 本地联调栈（网关源码 + Postgres 数据目录），体积大且不参与门户镜像构建
+local-stack
+docs
+*.log
+*.md
+.env
+.env.local
+Dockerfile
+docker-compose.yml
+# 本机 compose 覆盖（npm run env:local 生成）：绝不能进镜像，否则本地地址/校名会被带上线
+docker-compose.override.yml
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+# 只忽略仓库根下的零散截图（历史遗留的 wx-login-qr.png），
+# public/ 里的静态图要打进镜像，不能一起忽略
+/*.png

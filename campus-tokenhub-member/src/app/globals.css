@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-cream text-ink-900 antialiased;
+}
+
+/* 统一可见焦点：品牌橙描边，仅键盘操作时出现 */
+:focus-visible {
+  outline: 2px solid #ff8f54;
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #fff1e8;
+  color: #1a1a1a;
+}
+
+/* 让长 Key 与代码块可以横向滚动而不撑破布局 */
+.scroll-x {
+  overflow-x: auto;
+}
+
+/* 顶部导航进度条：只动 transform，避免逐帧重排 */
+@keyframes nav-progress-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(.9);
+  }
+}
+
+.nav-progress-running {
+  will-change: transform;
+  animation: nav-progress-grow 8s cubic-bezier(.1, .6, .3, 1) forwards;
+}
+
+.nav-progress-done {
+  transform: scaleX(1);
+}
+
+/* 短请求只保留布局占位，不闪烁；脉动只在最外层加载区域运行。 */
+@keyframes skeleton-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: .65;
+  }
+}
+
+.skeleton-region {
+  animation: skeleton-fade 140ms ease-out 90ms both, skeleton-pulse 2s ease-in-out 230ms infinite;
+}
+
+.skeleton-region .skeleton-region {
+  animation: none;
+}
+
+@keyframes page-enter {
+  from {
+    opacity: .85;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: page-enter 140ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-progress-running {
+    will-change: auto;
+    animation: none;
+    transform: scaleX(.6);
+  }
+
+  .skeleton-region,
+  .page-enter {
+    animation: none;
+  }
+}

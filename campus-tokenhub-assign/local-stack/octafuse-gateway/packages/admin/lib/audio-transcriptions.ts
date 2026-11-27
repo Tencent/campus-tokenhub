@@ -1,0 +1,206 @@
+/**
+ * Shared helpers for Admin Playground / Simulator / Routes
+ * (`/v1/audio/transcriptions` multipart).
+ */
+import {
+	parsePricingProfile,
+	profileHasAudioPerCharacterPricing,
+	profileHasAudioPerSecondPricing,
+	profileHasAudioTokenPricing,
+} from "@octafuse/core/db/pricing-profile";
+import {
+	formatPerCharacterUnit,
+	formatPerMillionTokenUnit,
+	formatPerSecondUnit,
+} from "@/lib/format-gateway-currency";
+
+/** Align with Proxy audio driver limits (admin must not depend on `@octafuse/proxy`). */
+export const AUDIO_MAX_BYTES_PER_FILE = 25 * 1024 * 1024;
+
+/** Default JSON fields for transcriptions (audio file uploaded separately as multipart). */
+export const AUDIO_TRANSCRIPTIONS_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "language": "",
+  "response_format": "json",
+  "file_url": ""
+}`;
+
+/** OpenAI 入口测异步 filetrans 时用公网 file_url，不再上传本地文件。 */
+export const AUDIO_TRANSCRIPTIONS_FILE_URL_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "file_url": "https://example.com/sample.wav",
+  "language": "zh",
+  "response_format": "json"
+}`;
+
+/** DashScope 同步 multimodal HTTP 透传模板（官方 input_audio）。 */
+export const DASHSCOPE_MULTIMODAL_ASR_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "input": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_audio",
+            "input_audio": { "data": "https://example.com/sample.wav" }
+          }
+        ]
+      }
+    ]
+  },
+  "parameters": {
+    "format": "wav",
+    "language_hints": ["zh"]
+  }
+}`;
+
+/** 默认使用 OpenAI 与 DashScope Qwen TTS 都支持的 WAV，避免模板直接触发上游格式错误。 */
+export const AUDIO_SPEECH_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "input": "你好，欢迎使用 OctaFuse Gateway。",
+  "voice": "alloy",
+  "response_format": "wav",
+  "speed": 1
+}`;
+
+/** OpenAI `/v1/audio/speech` → MiniMax 官方 t2a_v2。音色必须是 MiniMax voice_id。 */
+export const MINIMAX_OPENAI_SPEECH_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "input": "你好，欢迎使用 OctaFuse Gateway。",
+  "voice": "male-qn-qingse",
+  "response_format": "mp3",
+  "speed": 1,
+  "voice_setting": {
+    "emotion": "happy"
+  },
+  "language_boost": "Chinese"
+}`;
+
+/** MiniMax 同步语音合成 POST /v1/t2a_v2。stream 为 false 时返回 hex，调试台再解码播放。 */
+export const MINIMAX_SPEECH_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "text": "你好，欢迎使用 OctaFuse Gateway。",
+  "stream": false,
+  "voice_setting": {
+    "voice_id": "male-qn-qingse",
+    "speed": 1,
+    "vol": 1,
+    "pitch": 0
+  },
+  "audio_setting": {
+    "sample_rate": 32000,
+    "bitrate": 128000,
+    "format": "mp3",
+    "channel": 1
+  }
+}`;
+
+/** OpenAI `/v1/audio/speech` → ElevenLabs text-to-speech。voice 必须是 ElevenLabs voice_id。 */
+export const ELEVENLABS_OPENAI_SPEECH_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "input": "你好，欢迎使用 OctaFuse Gateway。",
+  "voice": "JBFqnCBsd6RMkjVDRZzb",
+  "response_format": "mp3",
+  "speed": 1,
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.75
+  }
+}`;
+
+/**
+ * ElevenLabs 原生 text-to-speech。voice_id / variant（speech|stream|timestamps|stream-timestamps）进路径，
+ * output_format / enable_logging / optimize_streaming_latency 进 query，其余作为 JSON body。
+ */
+export const ELEVENLABS_SPEECH_BODY_TEMPLATE = `{
+  "model_id": "<auto>",
+  "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+  "variant": "speech",
+  "output_format": "mp3_44100_128",
+  "text": "你好，欢迎使用 OctaFuse Gateway。",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.75
+  }
+}`;
+
+/** ElevenLabs 原生 speech-to-text（音频文件另行上传为 multipart）。 */
+export const ELEVENLABS_TRANSCRIPTIONS_BODY_TEMPLATE = `{
+  "model_id": "<auto>",
+  "language_code": "",
+  "diarize": false,
+  "tag_audio_events": true
+}`;
+
+/** Validate audio file before send (Playground / Simulator). */
+export function validateAudioTranscriptionFile(
+	file: File | null | undefined
+): { ok: true } | { ok: false; error: string } {
+	if (!file) {
+		return { ok: false, error: "An audio file is required" };
+	}
+	if (file.size > AUDIO_MAX_BYTES_PER_FILE) {
+		return {
+			ok: false,
+			error: `audio file must be at most ${AUDIO_MAX_BYTES_PER_FILE} bytes`,
+		};
+	}
+	return { ok: true };
+}
+
+export type CatalogAudioPricingDisplay =
+	| {
+			mode: "per_second";
+			pricePerSecond: string;
+			minimumSeconds: string;
+			unit: string;
+	  }
+	| {
+			mode: "token";
+			inputPrice: string;
+			outputPrice: string;
+			unit: string;
+	  }
+	| {
+			mode: "per_character";
+			pricePerCharacter: string;
+			minimumCharacters: string;
+			unit: string;
+	  };
+
+/** Catalog model → 只读单价摘要（Routes 弹窗；ASR 或 TTS）。 */
+export function getCatalogAudioPricingDisplay(
+	model: { pricing_profile?: string | null } | null | undefined,
+	currencyCode = "USD"
+): CatalogAudioPricingDisplay | null {
+	if (!model?.pricing_profile?.trim()) return null;
+	const p = parsePricingProfile(model.pricing_profile);
+	if (!p) return null;
+	if (profileHasAudioTokenPricing(p) && p.tiers.length > 0) {
+		const tier = p.tiers[0]!;
+		return {
+			mode: "token",
+			inputPrice: String(tier.input_price),
+			outputPrice: String(tier.output_price),
+			unit: formatPerMillionTokenUnit(currencyCode),
+		};
+	}
+	if (profileHasAudioPerSecondPricing(p) && p.audio) {
+		return {
+			mode: "per_second",
+			pricePerSecond: String(p.audio.price_per_second),
+			minimumSeconds: String(p.audio.minimum_seconds ?? 1),
+			unit: formatPerSecondUnit(currencyCode),
+		};
+	}
+	if (profileHasAudioPerCharacterPricing(p) && p.audio) {
+		return {
+			mode: "per_character",
+			pricePerCharacter: String(p.audio.price_per_character),
+			minimumCharacters: String(p.audio.minimum_characters ?? 0),
+			unit: formatPerCharacterUnit(currencyCode),
+		};
+	}
+	return null;
+}

@@ -1,0 +1,760 @@
+/*
+ * Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+ * This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+ */
+
+import type { DashboardOverview, DashboardOverviewWindow } from '@octafuse/core';
+/**
+ * 管理后台 API 的请求/响应 TypeScript 类型（与 Hono 路由 JSON 契约对应）。
+ * 下列按路由分组用注释隔开，便于检索。
+ */
+import type { ModelKind } from '@octafuse/core/db/model-kind';
+import type {
+	ApiKeyBudgetAuditLogRow,
+	ApiKeyRateLimit,
+	GlobalApiKeyBudgetAuditLogRow,
+	RequestLogRow,
+} from '@octafuse/core';
+import type { ModelRouteJoinRow, RequestLogSummaryRow } from '@octafuse/core';
+import type { UpstreamProtocol } from '@octafuse/core/upstream-protocol';
+
+export type BudgetPeriod = 'none' | 'daily' | 'weekly' | 'monthly';
+
+export type JsonObject = Record<string, unknown>;
+export type AdminDataRow = Record<string, unknown>;
+
+/** ---------- `/admin/users` 请求体 ---------- */
+export type AdminUserCreateInput = {
+	external_system?: string | null;
+	external_user_id?: string | null;
+	email: string;
+	budget_max?: number | null;
+	budget_base?: number | null;
+	budget_period?: BudgetPeriod;
+	metadata?: unknown;
+	/**
+	 * `{ "<models.id>": factor | { "<route_group>" | "*": factor } }`。
+	 * 数字覆盖该模型全部分组；`null` / `{}` 清空。
+	 */
+	charged_cost_factors?: Record<string, number | Record<string, number>> | null;
+	/**
+	 * 用户级限流（与 `PATCH /admin/users/:id` 同形状：`{ rpm?, tpm? }` / `null` / JSON 字符串）。
+	 * **只在本次真正建号时写入**；用户已存在（按 `(external_system, external_user_id)` 命中）时忽略，
+	 * 因此调用方（例如门户每次登录都发的开户请求）不必担心覆盖管理员后来调整的值。
+	 */
+	rate_limit?: unknown;
+};
+
+export type AdminUserUpdateInput = {
+	email?: string | null;
+	budget_max?: number | null;
+	budget_base?: number | null;
+	budget_spent?: number | null;
+	budget_period?: BudgetPeriod;
+	reset_budget?: boolean;
+	budget_reset_at?: string | null;
+	reason?: string;
+	metadata?: unknown;
+	metadata_replace?: unknown;
+	status?: string;
+	/**
+	 * 外部身份对：要么两者都为非空字符串（链接到上游），要么两者都为 null
+	 * （清除链接，回到 Gateway-only internal user）。任一字段被显式提供即视为
+	 * 一次原子更新；未提供则保持原值。
+	 */
+	external_system?: string | null;
+	external_user_id?: string | null;
+	/**
+	 * `{ "<models.id>": factor | { "<route_group>" | "*": factor } }`。
+	 * 数字覆盖该模型全部分组；`null` / `{}` 清空。
+	 */
+	charged_cost_factors?: Record<string, number | Record<string, number>> | null;
+	/** 永久额度累计发放（绝对值运维修正） */
+	wallet_granted?: number | null;
+	/** 永久额度累计消耗（绝对值运维修正） */
+	wallet_spent?: number | null;
+	/** 用户层限流 JSON；`null` 表示该层不限。形状与 Key `rate_limit` 相同。 */
+	rate_limit?: ApiKeyRateLimit | null;
+};
+
+/** ---------- `/admin/users/:id/budget/transition` 请求体 ---------- */
+export type AdminBudgetTransitionInput = {
+	target_budget_base: number;
+	budget_period: BudgetPeriod;
+	budget_reset_at?: string | null;
+	carryover_strategy?: 'remaining_or_overage' | 'none';
+	reset_spent?: boolean;
+	metadata?: Record<string, unknown>;
+	reason?: string;
+};
+
+export type AdminBudgetTransitionSnapshot = {
+	budget_max: number | null;
+	budget_base: number;
+	budget_spent: number;
+	budget_period: string;
+	budget_reset_at: string | null;
+};
+
+export type AdminBudgetTransitionPreviewOutput = {
+	before: AdminBudgetTransitionSnapshot;
+	after: AdminBudgetTransitionSnapshot;
+	carryover: number;
+};
+
+/** ---------- `/admin/keys` 请求体 ---------- */
+export type AdminKeyCreateInput = {
+	/** 已有用户时直接关联；与 `external_system` + `external_user_id` 二选一 */
+	user_id?: string;
+	external_system?: string | null;
+	external_user_id?: string | null;
+	/** 通过外部身份新建用户时必填（写入 `users.email`） */
+	email?: string | null;
+	name?: string | null;
+	metadata?: unknown;
+	/** 写入 `key_created` 审计的 `reason_text`（仅本次真正新建密钥时） */
+	reason?: string;
+};
+
+export type AdminKeyUpdateInput = {
+	metadata?: unknown;
+	metadata_replace?: unknown;
+	status?: string;
+	name?: string | null;
+	/** null = unlimited; omit = unchanged */
+	rate_limit?: ApiKeyRateLimit | null;
+	reason?: string;
+};
+
+/** ---------- `/admin/providers` 请求体（字段多为 unknown 以承接 JSON） ---------- */
+export type AdminProviderMutationInput = {
+	id?: unknown;
+	name?: unknown;
+	/** 导入模板英文 `name`，或 `__custom__`。创建必填；PATCH 省略 = 不改，空串 = 尚未分类。 */
+	kind?: unknown;
+	/** `{ openai?: { base?, endpoints? }, … }` 对象或 JSON 字符串 */
+	endpoints?: unknown;
+	/** 创建必填；PATCH 省略 = 不改，空串/null = 清空 */
+	api_key?: unknown;
+	/** `active` | `disabled` */
+	status?: unknown;
+	/** 运营备注。空串或 null 清空。 */
+	note?: unknown;
+	/**
+	 * 按上游协议分组的默认 `custom_params`：`{ "<protocol>": { headers?, body? } }` 对象或 JSON 字符串，
+	 * 无 `force_override`（该字段仍只属于 Route）。创建省略 = 不配置；PATCH 省略 = 不改，`null` = 清空。
+	 */
+	custom_params?: unknown;
+	[key: string]: unknown;
+};
+
+/** `GET /admin/providers/import/catalog`：内置 Provider 模板摘要（无密钥）。`id` 为 catalog 行键（数组下标），非入库 provider id。 */
+export type AdminProviderImportCatalogItem = {
+	id: string;
+	name: string;
+	vendor_key: string;
+	/** Provider 产品级静态图标 key；不写入数据库。 */
+	icon_key: string;
+	vendor_label: string;
+	protocols: UpstreamProtocol[];
+	/** 序列化后的 endpoints JSON（可 null） */
+	endpoints: string | null;
+	/** 缺本地化摘要时导入列表回退展示的运维说明。不写入数据库。 */
+	description: string | null;
+	/** 导入列表与入库显示名。按界面语言取 `en` / `zh` / `ja` / `ko`。 */
+	labels?: {
+		en: { name: string; description: string };
+		zh: { name: string; description: string };
+		ja: { name: string; description: string };
+		ko: { name: string; description: string };
+	};
+	/** 官网 / 密钥页 / 可选邀请链接；不写入 providers 表。 */
+	links?: {
+		platform?: string;
+		api_keys?: string;
+		referral?: string;
+	};
+};
+
+/** `POST /admin/providers/import` 请求体：导入选中的 catalog 键（`GET .../catalog` 返回的 `id`）。 */
+export type AdminProvidersImportBody = {
+	ids: string[];
+	/** 当前界面语言。`zh` / `ja` / `ko` 用对应目录名称，其余用英文。缺省按英文。 */
+	locale?: string;
+};
+
+/** `POST /admin/providers/import`：从静态模板创建 `providers` 行；每次导入新增；`skipped_existing` 恒为空（兼容字段）。 */
+export type AdminProvidersImportOutput = {
+	created: number;
+	/** 与 `/admin/models/import` 对齐，恒为 `0`。 */
+	updated: number;
+	/** 兼容字段；重复导入同一模板不再跳过，恒为空数组。 */
+	skipped_existing: string[];
+	failed: Array<{ id: string; message: string }>;
+};
+
+/** ---------- `/admin/models` 请求体 ---------- */
+export type AdminModelMutationInput = {
+	id?: unknown;
+	display_name?: unknown;
+	vendor?: unknown;
+	context_window?: unknown;
+	max_tokens?: unknown;
+	/**
+	 * 定价 profile：`{ "tiers": [...] }` JSON；写入前由 `coerceModelPricingProfileInput` 校验。
+	 * 空字符串 / null 表示清除（PATCH 时）。
+	 */
+	pricing_profile?: unknown;
+	/** 运营备注。空串或 null 清空。 */
+	note?: unknown;
+	metadata?: unknown;
+	tags?: unknown;
+	[key: string]: unknown;
+};
+
+/** ---------- `/admin/routes` 请求体 ---------- */
+export type AdminModelRouteMutationInput = {
+	id?: unknown;
+	model_id?: unknown;
+	provider_id?: unknown;
+	provider_model_name?: unknown;
+	priority?: unknown;
+	/** 同 priority 层内权重；默认 1 */
+	weight?: unknown;
+	status?: unknown;
+	route_group?: unknown;
+	/** JSON string or object; canonical `charged_factor` / `metered_factor` / optional `schedule`; nested `metered`/`charged` tiers stripped on write. Normalized by `coerceRoutePriceOverrideInput`. */
+	price_override?: unknown;
+	custom_params?: unknown;
+	upstream_protocol?: unknown;
+	/** Public Gateway protocol used to enter this route pool. Defaults to upstream_protocol. */
+	request_protocol?: unknown;
+	/** Public operation (`chat`, `messages`, `generateContent`, ...); `*` preserves legacy behavior. */
+	request_operation?: unknown;
+	/** Provider-side capability. `*` follows the request operation. */
+	upstream_operation?: unknown;
+	/** 显式 request conversion adapter；跨协议组合由 Core 白名单校验。 */
+	adapter?: unknown;
+	route_pool_id?: unknown;
+	[key: string]: unknown;
+};
+
+/** ---------- `/admin/config` PUT 单键更新 ---------- */
+export type AdminConfigUpdateInput = {
+	key?: string;
+	value?: string;
+};
+
+/** 创建类接口统一返回新生成 id */
+export type AdminCreatedIdOutput = {
+	id: string;
+};
+
+/** `GET /admin/models/import/catalog`：可导入的静态预设摘要（不含完整 pricing JSON）。 */
+export type AdminStaticModelPresetCatalogItem = {
+	id: string;
+	display_name: string | null;
+	vendor: string;
+	/** LLM / 文生图 / 语音转写（与列表页 Kind 一致）。 */
+	kind: ModelKind;
+	context_window: number | null;
+	max_tokens: number | null;
+	/** English catalog summary, shown when `i18n.en` is absent. Not stored. */
+	description: string | null;
+	/** Localized catalog introductions. Admin displays these; they are not stored. */
+	i18n: {
+		en: string;
+		zh: string;
+		ja: string;
+		ko: string;
+	} | null;
+	/** Model release date `YYYY-MM-DD`. */
+	released: string | null;
+	/** Vendor retirement date `YYYY-MM-DD`; null = still offered. */
+	retired: string | null;
+	/** 当前计费币种对应目录价分支的档位数 */
+	tier_count: number;
+	/** 表格短文案（如 `¥12 / ¥36 /M` 或 `$2 / $8 /M`）。 */
+	pricing_label: string | null;
+	/** 当前计费币种的目录价分支是否存在；不存在时无法导入（例如只有 USD 刊例价的海外模型在 CNY 网关下）。 */
+	pricing_available: boolean;
+	/** 悬停详情：token 档位行（单位与 `BILLING_CURRENCY` 一致）。 */
+	pricing_preview: string | null;
+};
+
+/** `POST /admin/models/import` 请求体：仅导入选中的预设 id。 */
+export type AdminModelsImportBody = {
+	ids: string[];
+};
+
+/** `POST /admin/models/import`：从内置静态目录按当前 `BILLING_CURRENCY` 选用 USD/CNY 价写入库。 */
+export type AdminModelsImportOutput = {
+	/** 实际选用的价格分支（与 `BILLING_CURRENCY` 一致，非法历史值时回退为 USD） */
+	billing_currency_used: string;
+	created: number;
+	/** 始终为 `0`：已存在的 model id 不会被覆盖（见 `skipped_existing`）。 */
+	updated: number;
+	/** 请求中出现、但库中已存在同 id 因而未导入的 id（不覆盖已有行）。 */
+	skipped_existing: string[];
+	failed: Array<{ id: string; message: string }>;
+};
+
+/** ---------- 列表/详情行（与 D1 + JOIN 列对齐） ---------- */
+export type AdminProviderRow = {
+	id: string;
+	name: string;
+	/** 由内置 Provider 预设名称 / Endpoint 动态推导，或在 `kind` 已设置时由模板决定。不单独落库。 */
+	vendor_key?: string;
+	/** 产品级图标。`kind` 已设置时来自对应模板，否则按 URL / 名称推断。不单独落库。 */
+	icon_key?: string;
+	/** 导入模板英文名、`__custom__`，或空字符串（尚未分类）。 */
+	kind?: string;
+	/** 已保存类型的中、英、日、韩展示名。自定义与未分类时省略。 */
+	kind_labels?: {
+		en: string;
+		zh: string;
+		ja?: string;
+		ko?: string;
+	};
+	/** 由内置预设叠加的官网 / 密钥 / 邀请链接，不持久化。 */
+	catalog_links?: {
+		platform?: string;
+		api_keys?: string;
+		referral?: string;
+	};
+	endpoints: string | null;
+	/**
+	 * 按上游协议分组的默认 `custom_params`（headers/body），无 `force_override`；原样返回已规范化的信封，
+	 * 不含明文密钥（本来就不涉及，Provider 参数不含密钥字段）。
+	 */
+	custom_params?: string | null;
+	/** 列表/详情为脱敏预览；明文仅经 `GET /:id/api-key` */
+	api_key?: string;
+	/** `active` | `disabled` */
+	status?: string;
+	/** 运营备注。类型介绍见 `kind_descriptions`。 */
+	note: string | null;
+	/** 已保存类型的中、英、日、韩介绍。自定义、未分类或模板没有介绍时省略。 */
+	kind_descriptions?: {
+		en: string;
+		zh: string;
+		ja?: string;
+		ko?: string;
+	};
+	created_at: string;
+	has_pending_key?: boolean;
+	/** `model_routes` 引用该 provider 的总数 */
+	routes_count?: number;
+	/** 其中 status=active 的数量 */
+	active_routes_count?: number;
+	/** 当前 `kind` 是否有额度适配器。不落库。 */
+	quota_supported?: boolean;
+	[key: string]: unknown;
+};
+
+export type AdminModelRow = {
+	id: string;
+	display_name: string | null;
+	vendor: string;
+	context_window: number | null;
+	max_tokens: number | null;
+	pricing_profile: string | null;
+	input_modalities: string | null;
+	output_modalities: string | null;
+	released_at: string | null;
+	/** 厂商退役日期 `YYYY-MM-DD`，由内置静态目录按 id 匹配得出（不落库）；null=仍在提供或目录无此模型 */
+	retired_at?: string | null;
+	/** 运营备注。目录介绍见 `catalog_i18n`。 */
+	note: string | null;
+	/** 静态目录中、英、日、韩介绍。自建模型为 null。 */
+	catalog_i18n?: { en: string; zh: string; ja: string; ko: string } | null;
+	metadata: string | null;
+	/** 路由策略 JSON（`strategy` + `rules`）；null=回退全局 ROUTE_STRATEGY */
+	route_policy?: string | null;
+	created_at: string;
+	routes_count?: number;
+	active_routes_count?: number;
+	tags?: string[];
+	[key: string]: unknown;
+};
+
+export type AdminModelRouteRow = ModelRouteJoinRow & {
+	model_name?: string | null;
+	provider_name?: string | null;
+	[key: string]: unknown;
+};
+
+/** `GET /admin/keys` 单行 */
+export type AdminKeyListItem = {
+	id: string;
+	key: string;
+	user_id: string;
+	name: string | null;
+	user_email: string | null;
+	budget_max: number | null;
+	/** 订阅套餐基础上限（周期 reset 后 `budget_max` 复位至此） */
+	budget_base: number;
+	budget_spent: number;
+	budget_period: string;
+	budget_reset_at: string | null;
+	wallet_granted?: number;
+	wallet_spent?: number;
+	status: string;
+	metadata: string | null;
+	last_used_at?: string | null;
+	rate_limit?: ApiKeyRateLimit | null;
+	created_at: string;
+	updated_at: string;
+	[key: string]: unknown;
+};
+
+export type AdminKeyListOutput = {
+	data: AdminKeyListItem[];
+	total: number;
+	page: number;
+	page_size: number;
+};
+
+export type AdminKeyCreateOutput = {
+	key: string;
+	key_id: string;
+	user_id: string;
+};
+
+export type AdminKeyLogsOutput = {
+	logs: RequestLogRow[];
+	total: number;
+	page: number;
+	page_size: number;
+};
+
+export type AdminKeyBudgetAuditLogsOutput = {
+	logs: ApiKeyBudgetAuditLogRow[];
+	total: number;
+	page: number;
+	page_size: number;
+};
+
+/** 全局预算审计列表（行含 `user_email`，来自 JOIN `api_keys`）。 */
+export type AdminGlobalBudgetAuditLogsOutput = {
+	logs: GlobalApiKeyBudgetAuditLogRow[];
+	total: number;
+	page: number;
+	page_size: number;
+};
+
+export type AdminKeyUpdateOutput =
+	| {
+			id: string;
+			updated: true;
+	  }
+	| {
+			id: string;
+			key_id: string;
+			user_id: string;
+			name: string | null;
+			user_email: string | null;
+			budget_max: number | null;
+			budget_base?: number;
+			budget_spent: number;
+			budget_period: string;
+			budget_reset_at: string | null;
+			wallet_granted?: number;
+			wallet_spent?: number;
+			wallet_balance?: number;
+			metadata?: JsonObject;
+			last_used_at?: string | null;
+			rate_limit?: ApiKeyRateLimit | null;
+	  };
+
+export type AdminKeyDetailOutput = {
+	id: string;
+	key: string;
+	user_id: string;
+	name: string | null;
+	user_email: string | null;
+	budget_max: number | null;
+	/** 订阅套餐基础上限（周期 reset 后 `budget_max` 复位至此） */
+	budget_base: number;
+	budget_spent: number;
+	budget_period: string;
+	budget_reset_at: string | null;
+	wallet_granted?: number;
+	wallet_spent?: number;
+	wallet_balance?: number;
+	status: string;
+	metadata?: JsonObject;
+	last_used_at?: string | null;
+	rate_limit?: ApiKeyRateLimit | null;
+	created_at: string;
+	updated_at: string;
+	spend: number;
+	max_budget: number | null;
+};
+
+/** ---------- `/admin/request-logs` ---------- */
+export type AdminRequestLogListItem = RequestLogRow;
+
+export type AdminRequestLogsOutput = {
+	logs: AdminRequestLogListItem[];
+	total: number;
+	page: number;
+	page_size: number;
+};
+
+/** `GET /admin/request-logs/summary` 的输出。 */
+export type AdminRequestLogSummaryOutput = {
+	start: string;
+	end: string;
+	/** 规范化后的分组维度，逗号分隔，按固定顺序（provider、model、user、provider_key、route_group、status）。 */
+	group_by: string;
+	groups: RequestLogSummaryRow[];
+	/** 仅显式分页（传了 `limit`）时可能为 true。 */
+	has_more: boolean;
+};
+
+/** `GET /admin/config` 单行 */
+export type AdminConfigRow = {
+	key: string;
+	value: string;
+	description: string | null;
+};
+
+/** `GET /admin/stats` 仪表盘数据结构 */
+export type AdminStatsOutput = {
+	operations: DashboardOverview & { window: DashboardOverviewWindow };
+	gateway: {
+		activeKeysCount: number;
+		keysTotal: number;
+		keysActive: number;
+		accountsTotal: number;
+		accountsActive: number;
+		todayRequestsCount: number;
+		todayCost: number;
+		todayTokens: number;
+		errorRate: number;
+	};
+	kpi: {
+		totalRequests: number;
+		successRate: number;
+		totalCost: number;
+		meteredCost: number;
+		standardCost: number;
+		activeUsers: number;
+		errorRate: number;
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cacheWriteTokens: number;
+		totalTokens: number;
+		avgLatencyMs: number | null;
+		rpm: number;
+		tpm: number;
+	};
+	modelDistribution: Array<{
+		model_id: string;
+		request_count: number;
+		input_tokens: number;
+		output_tokens: number;
+		total_tokens: number;
+		charged_cost: number;
+		metered_cost: number;
+		standard_cost: number;
+	}>;
+	topUsers: Array<{
+		user_email: string;
+		request_count: number;
+		input_tokens: number;
+		output_tokens: number;
+		total_tokens: number;
+		charged_cost: number;
+		metered_cost: number;
+		standard_cost: number;
+	}>;
+	timeseries: Array<{
+		bucket: string;
+		request_count: number;
+		input_tokens: number;
+		output_tokens: number;
+		cache_read_tokens: number;
+		cache_write_tokens: number;
+		total_tokens: number;
+		charged_cost: number;
+		avg_latency_ms: number | null;
+		cache_hit_rate: number;
+	}>;
+	granularity: 'hour' | 'day';
+	recentLogs: RequestLogRow[];
+	recentErrors: RequestLogRow[];
+};
+
+/** ---------- `/admin/analytics/*` 装配后的行类型 ---------- */
+export type AdminModelAnalyticsRow = {
+	model_id: unknown;
+	route_group: string;
+	request_count: number;
+	charged_cost: number;
+	metered_cost: number;
+	standard_cost: number;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_write_tokens: number;
+	cache_hit_rate: number;
+	success_count: number;
+	error_count: number;
+	success_rate: number;
+	avg_latency_ms: number | null;
+	avg_first_reasoning_token_ms: number | null;
+	avg_first_token_ms: number | null;
+	avg_effective_ttft_ms: number | null;
+	avg_reasoning_phase_ms: number | null;
+	reasoning_ttft_rate: number;
+	content_ttft_rate: number;
+	avg_upstream_response_ms: number | null;
+	tokens_per_second: number | null;
+	stream_tokens_per_second?: number | null;
+	stream_sample_count?: number;
+	failover_rate: number;
+	/** Requests with at least one failover; legacy failover_rate counts events per 100 requests. */
+	failover_request_count?: number;
+	failover_request_rate?: number;
+	avg_attempts: number | null;
+	avg_charged_per_request: number;
+};
+
+export type AdminModelAnalyticsOutput = {
+	data: AdminModelAnalyticsRow[];
+	tags: string[];
+};
+
+export type AdminProviderAnalyticsRow = {
+	provider_id: unknown;
+	provider_name: string | null;
+	request_count: number;
+	charged_cost: number;
+	metered_cost: number;
+	standard_cost: number;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_write_tokens: number;
+	cache_hit_rate: number;
+	distinct_models: number;
+	success_count: number;
+	error_count: number;
+	success_rate: number;
+	avg_latency_ms: number | null;
+	avg_first_reasoning_token_ms: number | null;
+	avg_first_token_ms: number | null;
+	avg_effective_ttft_ms: number | null;
+	avg_reasoning_phase_ms: number | null;
+	reasoning_ttft_rate: number;
+	content_ttft_rate: number;
+	avg_upstream_response_ms: number | null;
+	tokens_per_second: number | null;
+	stream_tokens_per_second?: number | null;
+	stream_sample_count?: number;
+	failover_rate: number;
+	/** Requests with at least one failover; legacy failover_rate counts events per 100 requests. */
+	failover_request_count?: number;
+	failover_request_rate?: number;
+	avg_attempts: number | null;
+	avg_charged_per_request: number;
+};
+
+export type AdminProviderAnalyticsOutput = {
+	data: AdminProviderAnalyticsRow[];
+	tags: string[];
+};
+
+export type AdminUserAnalyticsRow = {
+	user_email: unknown;
+	request_count: number;
+	input_tokens: number;
+	output_tokens: number;
+	charged_cost: number;
+	metered_cost: number;
+	standard_cost: number;
+	distinct_models: number;
+	last_active_at: unknown;
+	budget_max: number | null;
+	budget_spent: number;
+	wallet_granted?: number | null;
+	wallet_spent?: number | null;
+	budget_usage_rate: number | null;
+	success_count?: number;
+	success_rate: number;
+	error_count: number;
+};
+
+export type AdminKeyAnalyticsRow = {
+	api_key_id: string | null;
+	key_name: string | null;
+	request_count: number;
+	input_tokens: number;
+	output_tokens: number;
+	charged_cost: number;
+	metered_cost: number;
+	standard_cost: number;
+	distinct_models: number;
+	last_active_at: unknown;
+	success_count: number;
+	error_count: number;
+	success_rate: number;
+};
+
+export type AdminReliabilityProviderRow = {
+	provider_id: unknown;
+	provider_name: string | null;
+	request_count: number;
+	success_count: number;
+	error_count: number;
+	success_rate: number;
+	avg_latency_ms: number | null;
+	avg_first_reasoning_token_ms: number | null;
+	avg_first_token_ms: number | null;
+	avg_effective_ttft_ms: number | null;
+	avg_reasoning_phase_ms: number | null;
+	reasoning_ttft_rate: number;
+	content_ttft_rate: number;
+	avg_upstream_response_ms: number | null;
+	failover_rate: number;
+	/** Requests with at least one failover; legacy failover_rate counts events per 100 requests. */
+	failover_request_count?: number;
+	failover_request_rate?: number;
+	avg_attempts: number | null;
+	charged_cost: number;
+	metered_cost: number;
+	standard_cost: number;
+};
+
+export type AdminReliabilityModelProviderRow = {
+	model_id: unknown;
+	provider_id: unknown;
+	provider_name: string | null;
+	request_count: number;
+	success_rate: number;
+	avg_latency_ms: number | null;
+	avg_first_reasoning_token_ms: number | null;
+	avg_first_token_ms: number | null;
+	avg_effective_ttft_ms: number | null;
+	avg_reasoning_phase_ms: number | null;
+	reasoning_ttft_rate: number;
+	content_ttft_rate: number;
+	avg_upstream_response_ms: number | null;
+	failover_rate: number;
+	/** Requests with at least one failover; legacy failover_rate counts events per 100 requests. */
+	failover_request_count?: number;
+	failover_request_rate?: number;
+	avg_attempts: number | null;
+	charged_cost: number;
+	metered_cost: number;
+	standard_cost: number;
+};
+
+export type AdminReliabilityAnalyticsOutput = {
+	providers: AdminReliabilityProviderRow[];
+	modelProviders: AdminReliabilityModelProviderRow[];
+	recentErrors: RequestLogRow[];
+};

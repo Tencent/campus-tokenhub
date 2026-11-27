@@ -1,0 +1,51 @@
+{
+  "name": "campus-tokenhub",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "audit": "npm audit --audit-level=high",
+    "dev": "next dev --turbopack",
+    "dev:webpack": "next dev",
+    "dev:local": "node scripts/use-env.mjs local && next dev --turbopack --port 3000 --hostname 127.0.0.1",
+    "dev:online": "node scripts/use-env.mjs online && next dev --turbopack --port 3000",
+    "dev:lan": "node scripts/use-env.mjs lan && next dev --turbopack --port 3000 --hostname 0.0.0.0",
+    "env:local": "node scripts/use-env.mjs local",
+    "env:online": "node scripts/use-env.mjs online",
+    "env:lan": "node scripts/use-env.mjs lan",
+    "env:current": "node scripts/use-env.mjs current",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:admin-nginx": "node --test scripts/admin-nginx-routing.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "check:isolation": "node scripts/check-isolation.mjs",
+    "check:isolation:warn": "node scripts/check-isolation.mjs --warn",
+    "bootstrap-admin": "node scripts/bootstrap-admin.mjs",
+    "check:shared-ddl": "node scripts/check-shared-ddl.mjs"
+  },
+  "dependencies": {
+    "@wecom/jssdk": "^2.3.2",
+    "jose": "^5.9.6",
+    "next": "16.4.6",
+    "pg": "^8.23.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "16.4.6",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^7.3.8",
+    "vitest": "^5.1.1"
+  }
+}

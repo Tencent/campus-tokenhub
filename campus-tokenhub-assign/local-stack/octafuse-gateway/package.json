@@ -1,0 +1,72 @@
+{
+	"name": "octafuse",
+	"version": "2.20.0",
+	"private": true,
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/OctaFuse/octafuse-gateway.git"
+	},
+	"type": "module",
+	"workspaces": [
+		".",
+		"packages/core",
+		"packages/tool-engines",
+		"packages/proxy",
+		"packages/admin"
+	],
+	"scripts": {
+		"postinstall": "npm run gen:wrangler",
+		"gen:wrangler": "node scripts/deploy/gen-wrangler.mjs",
+		"verify:package-versions": "node scripts/ci/verify-package-versions.mjs",
+		"typecheck:admin": "npm run typecheck -w @octafuse/admin",
+		"ci:changeset-tag-push": "changeset tag && node scripts/ci/push-root-release-tag.mjs",
+		"release:notes": "node scripts/release/render-release-notes.mjs",
+		"dev:proxy": "npm run dev -w @octafuse/proxy",
+		"dev:proxy:node": "dotenv -c -- npm run dev:node -w @octafuse/proxy",
+		"dev:admin": "npm run dev:node -w @octafuse/admin",
+		"dev:admin:node": "dotenv -c -- npm run dev:node -w @octafuse/admin",
+		"deploy:proxy": "npm run gen:wrangler -- --remote && npm run deploy -w @octafuse/proxy",
+		"deploy:admin": "npm run build -w @octafuse/core && npm run gen:wrangler -- --remote && npm run deploy -w @octafuse/admin",
+		"bootstrap:cloudflare": "node scripts/deploy/bootstrap-cloudflare.mjs",
+		"deploy:cloudflare": "node scripts/deploy/deploy-instance.mjs",
+		"db:migrate": "npm run gen:wrangler && node scripts/deploy/wrangler-d1-cli.mjs migrations apply --local --persist-to .wrangler/state",
+		"db:migrate:remote": "npm run gen:wrangler -- --remote && node scripts/deploy/wrangler-d1-cli.mjs migrations apply --remote",
+		"db:migrate:pg": "dotenv -c -- tsx packages/core/src/migrate/cli.ts --driver postgres",
+		"db:migrate:pg:docker": "node packages/core/dist/migrate/cli.js --driver postgres",
+		"db:migrate:mysql": "dotenv -c -- tsx packages/core/src/migrate/cli.ts --driver mysql",
+		"db:migrate:mysql:docker": "node packages/core/dist/migrate/cli.js --driver mysql",
+		"db:list:pg": "dotenv -c -- tsx scripts/db/diag/list-pg-databases.ts",
+		"db:query": "npm run gen:wrangler && node scripts/deploy/wrangler-d1-cli.mjs execute --local --persist-to .wrangler/state --command",
+		"db:query:remote": "npm run gen:wrangler -- --remote && node scripts/deploy/wrangler-d1-cli.mjs execute --remote --command",
+		"db:export:remote:schema": "tsx scripts/db/d1-remote-export/export-remote-schema.ts",
+		"db:export:remote:data": "tsx scripts/db/d1-remote-export/export-remote-data.ts",
+		"test:gateway:node-smoke": "dotenv -c -- tsx scripts/smoke/test-node-core-routes.ts",
+		"test:gateway:postgres-smoke": "dotenv -c -- tsx scripts/smoke/test-postgres-core-routes.ts",
+		"test:gateway:sql-storage-smoke": "dotenv -c -- tsx scripts/smoke/test-storage-concurrent-charge.ts",
+		"test:deploy": "node --test scripts/deploy/*.test.mjs",
+		"verify:proxy-bundle": "node scripts/ci/verify-proxy-bundle-externals.mjs",
+		"docs:image-models": "node scripts/docs/gen-image-models.mjs",
+		"test:docs": "node --test scripts/docs/*.test.mjs",
+		"test:db-scripts": "tsx --test scripts/db/lib/*.test.ts",
+		"test:unit": "npm run test:deploy && npm run test:docs && npm run test:db-scripts && npm run test:critical-writes && npm run test:unit -w @octafuse/core && npm run test:unit -w @octafuse/tool-engines && npm run test:unit -w @octafuse/proxy && npm run test:unit -w @octafuse/admin",
+		"typecheck": "npm run typecheck -w @octafuse/core && npm run typecheck -w @octafuse/tool-engines && npm run typecheck -w @octafuse/proxy && npm run typecheck:admin",
+		"test:critical-writes": "tsx --test scripts/smoke/test-critical-write-paths.ts scripts/smoke/*.test.ts"
+	},
+	"devDependencies": {
+		"@changesets/changelog-github": "^0.5.1",
+		"@changesets/cli": "^2.29.8",
+		"@types/node": "^25.5.0",
+		"dotenv-cli": "^11.0.0",
+		"tsx": "^4.23.15",
+		"typescript": "^5.7.2",
+		"wrangler": "^4.156.0"
+	},
+	"overrides": {
+		"@opennextjs/cloudflare": {
+			"glob": "^14.0.2"
+		},
+		"@node-minify/core": {
+			"glob": "^14.0.2"
+		}
+	}
+}

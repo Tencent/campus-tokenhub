@@ -1,0 +1,193 @@
+/**
+ * 管理路由：`/admin/playground` — 管理员试调用。
+ * - routeId / routeDraft 分支：直连单条路由（已保存或草稿）的上游（不计费、不写 logs、无 failover）
+ * - toolId 分支：读 system_config catalog 直连工具引擎（可测非 Active；不计费、不写 logs）
+ */
+import { Hono } from 'hono';
+import type { AdminEnv } from '@/lib/admin-env';
+import { requireAdminPrincipal } from '@/lib/middleware/admin-auth';
+import type { GeminiContentAction } from '@octafuse/core/gemini-upstream-url';
+import type { ImageOperation } from '@/lib/image-generations';
+import { invokePlaygroundUpstream, previewPlaygroundUpstream } from '@/lib/services/admin/playground-service';
+import { invokePlaygroundTool } from '@/lib/services/admin/playground-tools-service';
+import {
+	dispatchPlaygroundRealtime,
+	PLAYGROUND_REALTIME_OPERATIONS,
+} from '@/lib/services/admin/playground-realtime-service';
+import { copyPlaygroundUpstreamHeaders } from '@/lib/playground/proxy-response-headers';
+import { encodePlaygroundRequestHeadersHeader } from '@/lib/playground/outbound-headers';
+import { PLAYGROUND_REQUEST_SOURCES_HEADER } from '@/lib/playground/request-sources';
+import { handleAdminRouteError } from './error-response';
+
+export const adminPlaygroundRoutes = new Hono<AdminEnv>();
+
+adminPlaygroundRoutes.use('*', requireAdminPrincipal);
+
+adminPlaygroundRoutes.get('/realtime', async (c) => {
+	if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
+		return c.json({ success: false as const, message: 'Expected a WebSocket upgrade request' }, 426);
+	}
+	const routeId = c.req.query('routeId')?.trim() ?? '';
+	const operation = c.req.query('operation')?.trim() ?? '';
+	if (!routeId) return c.json({ success: false as const, message: 'routeId is required' }, 400);
+	if (!(PLAYGROUND_REALTIME_OPERATIONS as readonly string[]).includes(operation)) {
+		return c.json({ success: false as const, message: `Unsupported realtime operation: ${operation || '(empty)'}` }, 400);
+	}
+	try {
+		// ElevenLabs 的 voice_id 与其余 query（output_format、commit_strategy 等）由浏览器随 URL 传来。
+		const { routeId: _routeId, operation: _operation, voice_id: voiceId, ...query } = c.req.query();
+		const result = await dispatchPlaygroundRealtime(
+			c.get('repositories'),
+			{ routeId, operation, elevenLabs: { voiceId, query } },
+			c.env.NODE_PLAYGROUND_REALTIME_DISPATCH ? undefined : c.req.raw.signal,
+			{ nodeDispatch: c.env.NODE_PLAYGROUND_REALTIME_DISPATCH },
+		);
+		const headers = new Headers(result.response.headers);
+		headers.set('x-playground-upstream-url', result.upstreamUrl);
+		headers.set('x-playground-mode', 'realtime');
+		return new Response(result.response.body, {
+			status: result.response.status,
+			statusText: result.response.statusText,
+			headers,
+			webSocket: result.response.webSocket,
+		});
+	} catch (error) {
+		return handleAdminRouteError(c, error, 'Playground realtime invoke failed');
+	}
+});
+
+type PlaygroundPostBody = {
+	routeId?: unknown;
+	routeDraft?: unknown;
+	toolId?: unknown;
+	provider?: unknown;
+	body?: unknown;
+	geminiAction?: unknown;
+	imageOperation?: unknown;
+	preview?: unknown;
+	includeRequestSources?: unknown;
+};
+
+adminPlaygroundRoutes.post('/', async (c) => {
+	let parsed: PlaygroundPostBody;
+	try {
+		parsed = (await c.req.json()) as PlaygroundPostBody;
+	} catch {
+		return c.json({ success: false as const, message: 'Invalid JSON body' }, 400);
+	}
+
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		return c.json({ success: false as const, message: 'Expected a JSON object' }, 400);
+	}
+	const rawBody = parsed.body;
+	if (rawBody == null || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+		return c.json({ success: false as const, message: 'body must be a JSON object' }, 400);
+	}
+
+	const toolId = typeof parsed.toolId === 'string' ? parsed.toolId.trim() : '';
+	const routeId = typeof parsed.routeId === 'string' ? parsed.routeId.trim() : '';
+
+	const hasDraft = parsed.routeDraft !== undefined;
+	if ([Boolean(toolId), Boolean(routeId), hasDraft].filter(Boolean).length > 1) {
+		return c.json(
+			{ success: false as const, message: 'Provide exactly one of routeId, routeDraft, or toolId' },
+			400
+		);
+	}
+	if (parsed.preview === true && !routeId) {
+		return c.json({ success: false as const, message: 'routeId is required to preview a request' }, 400);
+	}
+
+	if (toolId) {
+		const provider = typeof parsed.provider === 'string' ? parsed.provider : '';
+		try {
+			const { response, upstreamUrlForHeader, latencyMs, upstreamWireBodyJson } =
+				await invokePlaygroundTool(
+					c.get('repositories'),
+					{
+						toolId,
+						provider,
+						body: rawBody as Record<string, unknown>,
+					},
+					c.req.raw.signal
+				);
+
+			const headers = copyPlaygroundUpstreamHeaders(response.headers);
+			headers.set('x-playground-latency-ms', String(latencyMs));
+			headers.set('x-playground-upstream-status', String(response.status));
+			headers.set('x-playground-upstream-url', upstreamUrlForHeader);
+			headers.set('x-playground-request-body', encodeURIComponent(upstreamWireBodyJson));
+			headers.set('x-playground-mode', 'tool');
+
+			return new Response(response.body, {
+				status: response.status,
+				statusText: response.statusText,
+				headers,
+			});
+		} catch (error) {
+			return handleAdminRouteError(c, error, 'Playground tool invoke failed');
+		}
+	}
+
+	if (!routeId && !hasDraft) {
+		return c.json(
+			{ success: false as const, message: 'routeId, routeDraft, or toolId is required' },
+			400
+		);
+	}
+
+	let geminiAction: GeminiContentAction | undefined;
+	if (parsed.geminiAction === 'generateContent' || parsed.geminiAction === 'streamGenerateContent') {
+		geminiAction = parsed.geminiAction;
+	} else if (parsed.geminiAction != null && parsed.geminiAction !== '') {
+		return c.json(
+			{ success: false as const, message: 'geminiAction must be generateContent or streamGenerateContent' },
+			400
+		);
+	}
+
+	let imageOperation: ImageOperation | undefined;
+	if (parsed.imageOperation === 'generations' || parsed.imageOperation === 'edits') {
+		imageOperation = parsed.imageOperation;
+	} else if (parsed.imageOperation != null && parsed.imageOperation !== '') {
+		return c.json(
+			{ success: false as const, message: 'imageOperation must be generations or edits' },
+			400
+		);
+	}
+
+	try {
+		const repos = c.get('repositories');
+		const body = rawBody as Record<string, unknown>;
+		if (parsed.preview === true) {
+			const data = await previewPlaygroundUpstream(repos, { routeId, body, geminiAction });
+			return c.json({ success: true as const, data });
+		}
+		const {
+			response, upstreamUrlForHeader, latencyMs, upstreamWireBodyJson, upstreamWireHeaders, requestSourceCodes,
+		} = await invokePlaygroundUpstream(repos, {
+			...(hasDraft ? { routeDraft: parsed.routeDraft } : { routeId }),
+			body,
+			geminiAction,
+			imageOperation,
+			includeRequestSources: parsed.includeRequestSources === true,
+		}, c.req.raw.signal);
+
+		const headers = copyPlaygroundUpstreamHeaders(response.headers);
+		headers.set('x-playground-latency-ms', String(latencyMs));
+		headers.set('x-playground-upstream-status', String(response.status));
+		headers.set('x-playground-upstream-url', upstreamUrlForHeader);
+		headers.set('x-playground-request-body', encodeURIComponent(upstreamWireBodyJson));
+		headers.set('x-playground-request-headers', encodePlaygroundRequestHeadersHeader(upstreamWireHeaders));
+		if (requestSourceCodes) headers.set(PLAYGROUND_REQUEST_SOURCES_HEADER, requestSourceCodes);
+		headers.set('x-playground-mode', 'route');
+
+		return new Response(response.body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers,
+		});
+	} catch (error) {
+		return handleAdminRouteError(c, error, 'Playground invoke failed');
+	}
+});

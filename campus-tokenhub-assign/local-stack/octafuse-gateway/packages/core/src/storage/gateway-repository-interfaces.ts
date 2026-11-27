@@ -1,0 +1,533 @@
+import type { DashboardOverview, DashboardOverviewWindow } from './repository-dtos';
+import type {
+	GlobalUserAuditLogRow,
+	ModelRow,
+	ModelRouteRow,
+	ProviderRow,
+	RequestLogRow,
+	ResolvedGatewayKeyRow,
+	UserAuditLogRow,
+	UserRow,
+	ApiKeyRow,
+} from '../types';
+import type { InsertUserAuditLogParams } from '../db/user-audit-logs-types';
+import type { BudgetFilter, InsertKeyParams } from '../db/api-keys-types';
+import type { InsertUserParams, UserMaxBudgetFilter } from '../db/users-types';
+import type { ApiKeyListSortField, ApiKeyListSortOrder } from '../db/api-keys-list-sort';
+import type { UserListSortField, UserListSortOrder } from '../db/users-list-sort';
+import type { ProviderProtocolBases } from '../db/providers-types';
+import type { SystemConfigRow } from '../db/system-config-types';
+import type { RequestLogMatchGroup } from '../db/request-log-filters';
+import type {
+	AdminApiKeyListItem,
+	EntityCountSnapshot,
+	ModelAnalyticsRow,
+	ModelProviderReliabilityRow,
+	ModelRouteDetailRow,
+	ModelRouteJoinRow,
+	ModelWithRouteCountsRow,
+	ProviderAdminRow,
+	ProviderAnalyticsRow,
+	ProviderReliabilityRow,
+	RequestStatsByRangeRow,
+	RequestTimeseriesRow,
+	ThroughputSnapshot,
+	UserAnalyticsRow,
+	KeyAnalyticsRow,
+	UserTokenTimeseriesRow,
+} from './repository-dtos';
+import type { ResolvedModelSurfaceRow } from '../route-topology';
+import type {
+	RoutePoolStickyBindingRow,
+	RoutePoolStickyActiveBindingRow,
+	RoutePoolStickyBindingTargetCount,
+} from '../db/route-pool-sticky-types';
+import type {
+	AdminApiKeyRow,
+	AdminSessionRow,
+	InsertAdminApiKeyParams,
+} from '../db/admin-access-types';
+import type { McpServersRepository } from '../db/mcp-servers.repository';
+import type { OAuthAccessTokensRepository } from '../db/oauth-access-tokens.repository';
+import type { OAuthServerRepository } from '../db/oauth-server.repository';
+
+export interface AdminAccessRepository {
+	listApiKeys(): Promise<AdminApiKeyRow[]>;
+	getApiKeyById(id: string): Promise<AdminApiKeyRow | null>;
+	getActiveApiKeyBySecret(secretKey: string): Promise<AdminApiKeyRow | null>;
+	insertApiKey(params: InsertAdminApiKeyParams): Promise<void>;
+	updateApiKey(
+		id: string,
+		patch: {
+			name?: string;
+			description?: string | null;
+			permissionsJson?: string;
+			secretKey?: string;
+			keyPrefix?: string;
+			status?: 'active' | 'revoked';
+			revokedAt?: string | null;
+		}
+	): Promise<boolean>;
+	rotateApiKey(id: string, secretKey: string, keyPrefix: string): Promise<boolean>;
+	revokeApiKey(id: string): Promise<boolean>;
+	touchApiKey(id: string): Promise<void>;
+	insertSession(session: AdminSessionRow): Promise<void>;
+	getValidSession(tokenHash: string, nowIso: string): Promise<AdminSessionRow | null>;
+	deleteSession(tokenHash: string): Promise<void>;
+	deleteExpiredSessions(nowIso: string): Promise<void>;
+}
+
+export type { McpServersRepository, OAuthAccessTokensRepository, OAuthServerRepository };
+
+/** 管理端分析聚合 */
+export interface AdminAnalyticsRepository {
+	queryModelAnalytics(options: {
+		start: string;
+		end: string;
+		tag?: string;
+		providerId?: string;
+		userEmail?: string;
+		userId?: string;
+		apiKeyId?: string;
+	}): Promise<ModelAnalyticsRow[]>;
+	queryDistinctModelTags(): Promise<string[]>;
+	queryUserAnalytics(options: { start: string; end: string; email?: string }): Promise<UserAnalyticsRow[]>;
+	queryKeyAnalytics(options: { start: string; end: string; userId: string }): Promise<KeyAnalyticsRow[]>;
+	queryProviderAnalytics(options: { start: string; end: string; tag?: string; modelId?: string; routeGroup?: string }): Promise<ProviderAnalyticsRow[]>;
+	queryProviderReliability(options: { start: string; end: string }): Promise<ProviderReliabilityRow[]>;
+	queryModelProviderReliability(options: { start: string; end: string }): Promise<ModelProviderReliabilityRow[]>;
+}
+
+export interface UserAuditLogsRepository {
+	insertUserAuditLog(params: InsertUserAuditLogParams): Promise<void>;
+	getUserAuditLogsByUserId(
+		userId: string,
+		page: number,
+		pageSize: number,
+		eventType?: string
+	): Promise<{ logs: UserAuditLogRow[]; total: number }>;
+	getGlobalUserAuditLogs(options: {
+		page?: number;
+		pageSize?: number;
+		userId?: string;
+		apiKeyId?: string;
+		userEmail?: string;
+		eventTypes?: string[];
+		actorTypes?: string[];
+		/** 精确匹配完整 `actor_id`，如 `console:admin`、`admin_key:<uuid>`。 */
+		actorId?: string;
+		/** 按 `actor_id` 的身份前缀过滤（`console` / `admin_key` / `system` / …），多值取并集。 */
+		actorKinds?: string[];
+		reasonCodes?: string[];
+		sources?: string[];
+		correlationId?: string;
+		startDate?: string;
+		endDate?: string;
+	}): Promise<{ logs: GlobalUserAuditLogRow[]; total: number }>;
+	getGlobalUserAuditLogFilterOptions(): Promise<{ reasonCodes: string[] }>;
+}
+
+export interface ApiKeysRepository {
+	getApiKeyByKey(key: string): Promise<ApiKeyRow | null>;
+	getApiKeyByKeyAnyStatus(key: string): Promise<ApiKeyRow | null>;
+	getApiKeyById(id: string): Promise<ApiKeyRow | null>;
+	getApiKeyWithUserByKey(key: string): Promise<ResolvedGatewayKeyRow | null>;
+	getApiKeyWithUserById(id: string): Promise<ResolvedGatewayKeyRow | null>;
+	listKeysByUserId(userId: string, options?: { status?: string }): Promise<ApiKeyRow[]>;
+	insertApiKey(params: InsertKeyParams): Promise<void>;
+	revokeApiKey(id: string): Promise<boolean>;
+	deleteApiKeyHard(id: string, secretKey: string): Promise<boolean>;
+	updateApiKeyStatusById(id: string, status: string): Promise<boolean>;
+	setApiKeyMetadataById(id: string, metadataJson: string | null): Promise<boolean>;
+	updateApiKeyName(id: string, name: string | null): Promise<boolean>;
+	updateApiKeyRateLimit(id: string, rateLimitJson: string | null): Promise<boolean>;
+	getAllApiKeys(options?: {
+		email?: string;
+		userId?: string;
+		maxBudget?: BudgetFilter;
+		page?: number;
+		pageSize?: number;
+		sort?: ApiKeyListSortField;
+		order?: ApiKeyListSortOrder;
+	}): Promise<{ keys: AdminApiKeyListItem[]; total: number }>;
+	getActiveApiKeysCount(): Promise<number>;
+	getApiKeysCount(): Promise<EntityCountSnapshot>;
+}
+
+export interface UsersRepository {
+	getById(id: string): Promise<UserRow | null>;
+	getByExternalPair(externalSystem: string, externalUserId: string): Promise<UserRow | null>;
+	listByEmail(email: string): Promise<UserRow[]>;
+	list(options?: {
+		email?: string;
+		externalSystem?: string;
+		externalUserId?: string;
+		maxBudget?: UserMaxBudgetFilter;
+		status?: string;
+		page?: number;
+		pageSize?: number;
+		sort?: UserListSortField;
+		order?: UserListSortOrder;
+	}): Promise<{ users: UserRow[]; total: number }>;
+	createUser(params: InsertUserParams): Promise<void>;
+	updateUserPlan(
+		id: string,
+		budget_max: number | null,
+		budget_period: string,
+		budget_reset_at: string | null,
+		resetBudget?: boolean,
+		metadata?: string | null,
+		budget_spent_override?: number | null,
+		budget_base?: number | null,
+		wallet_granted?: number | null,
+		wallet_spent?: number | null
+	): Promise<boolean>;
+	updateUserStatus(id: string, status: string): Promise<boolean>;
+	updateUserRateLimit(id: string, rateLimitJson: string | null): Promise<boolean>;
+	setUserMetadataById(id: string, metadataJson: string | null): Promise<boolean>;
+	setUserChargedCostFactorsById(id: string, chargedCostFactorsJson: string | null): Promise<boolean>;
+	setUserEmailById(id: string, email: string): Promise<boolean>;
+	/**
+	 * 同时更新一对 external 身份。两者要么都为非空字符串，要么都为 null
+	 * （由调用方校验；底层依赖 `users_external_pair_chk` 兜底）。
+	 */
+	setUserExternalIdentityById(
+		id: string,
+		externalSystem: string | null,
+		externalUserId: string | null
+	): Promise<boolean>;
+	deleteUserHard(id: string): Promise<boolean>;
+	getUsersCount(): Promise<EntityCountSnapshot>;
+}
+
+/** 模型列表页、标签、级联删除（models + model_tags + model_routes） */
+export interface ModelsRepository {
+	listModelsWithRouteCounts(): Promise<ModelWithRouteCountsRow[]>;
+	getModelDetailWithRouteCounts(id: string): Promise<ModelWithRouteCountsRow | null>;
+	insertModel(params: {
+		id: string;
+		displayName: unknown;
+		vendor: string;
+		contextWindow: unknown;
+		maxTokens: unknown;
+		pricingProfile?: unknown;
+		note: unknown;
+		metadata: unknown;
+		inputModalities?: unknown;
+		outputModalities?: unknown;
+		releasedAt?: unknown;
+	}): Promise<void>;
+	replaceModelTags(modelId: string, tags: string[]): Promise<void>;
+	updateModelByPatch(id: string, rest: Record<string, unknown>): Promise<number>;
+	/** Delete only when no active or disabled routes reference the model. Tags cascade via FK. */
+	deleteModelIfUnrouted(id: string): Promise<number>;
+}
+
+/** 推理路径：模型行（含 tags）、活跃路由列表、按 modelId 取路由 */
+export interface ModelRoutingRepository {
+	getModelById(id: string): Promise<ModelRow | null>;
+	listModelsWithActiveRoutes(): Promise<ModelRow[]>;
+	getModelRoutesByModelId(modelId: string): Promise<ModelRouteRow[]>;
+	resolveModelSurface(params: {
+		modelId: string;
+		routeGroup: string;
+		requestProtocol: string;
+		requestOperation: string;
+	}): Promise<ResolvedModelSurfaceRow | null>;
+	getModelRoutesByPoolId(poolId: string): Promise<ModelRouteRow[]>;
+}
+
+/** `listModelRoutesWithJoins` 过滤。公开列表传 `status: 'active'`；Admin CRUD 不传以拉全量。 */
+export type ListModelRoutesWithJoinsFilters = {
+	modelId?: string;
+	providerId?: string;
+	status?: 'active';
+};
+
+export interface ModelRoutesRepository {
+	listModelRoutesWithJoins(filters: ListModelRoutesWithJoinsFilters): Promise<ModelRouteJoinRow[]>;
+	insertModelRoute(params: {
+		id: string;
+		modelId: string;
+		providerId: string;
+		providerModelName: string;
+		priority: number;
+		status: string;
+		routeGroup: string;
+		weight?: number;
+		priceOverride: unknown;
+		customParams: string | null;
+		upstreamProtocol: string;
+		routePoolId: string;
+		upstreamOperation: string;
+		adapter: string;
+	}): Promise<void>;
+	getModelRouteRowById(id: string): Promise<ModelRouteDetailRow | null>;
+	ensureModelSurfacePool(params: {
+		poolId: string;
+		surfaceId: string;
+		modelId: string;
+		routeGroup: string;
+		requestProtocol: string;
+		requestOperation: string;
+		poolName: string;
+	}): Promise<{ poolId: string; surfaceId: string }>;
+	/**
+	 * Patch pool-level routing policy. Only provided fields are updated.
+	 * Pass `null` for strategy/tierStrategies to clear (inherit).
+	 * Sticky fields: providing any sticky* field bumps `sticky_epoch`.
+	 */
+	updateRoutePoolPolicy(
+		poolId: string,
+		patch: {
+			strategy?: string | null;
+			tierStrategies?: string | null;
+			stickyEnabled?: boolean;
+			stickyIdleTtlSeconds?: number;
+		}
+	): Promise<number>;
+	/**
+	 * Atomically bump `sticky_epoch` (invalidates all bindings for this pool).
+	 * Returns new epoch, or null when pool not found.
+	 */
+	bumpRoutePoolStickyEpoch(poolId: string): Promise<number | null>;
+	updateModelRouteByPatch(id: string, patch: Record<string, unknown>): Promise<number>;
+	deleteModelRouteById(id: string): Promise<number>;
+	/** Delete pool (and its surfaces) only when it has no model_routes targets. */
+	deleteRoutePoolIfEmpty(poolId: string): Promise<boolean>;
+}
+
+/** Shared Provider sticky bindings (cross-isolate / cross-instance). */
+export interface RoutePoolStickyBindingsRepository {
+	getBinding(routePoolId: string, affinityHash: string): Promise<RoutePoolStickyBindingRow | null>;
+	/**
+	 * Insert binding, or replace when existing row is expired, epoch-mismatched,
+	 * or matches `expectedToken` (stale but still-valid row, e.g. invalid_target).
+	 * Returns true when this write won.
+	 */
+	tryBind(params: {
+		routePoolId: string;
+		affinityHash: string;
+		routeTargetId: string;
+		bindingToken: string;
+		poolEpoch: number;
+		expiresAt: string;
+		nowIso: string;
+		/** When set, also allow overwrite of a still-valid row with this token. */
+		expectedToken?: string | null;
+		/** 明文 affinity key，供后台列出用户；缺省时保留已有值。 */
+		affinityKey?: string | null;
+	}): Promise<boolean>;
+	/** Sliding TTL renew; CAS on binding_token. Returns true when updated. */
+	touchBinding(params: {
+		routePoolId: string;
+		affinityHash: string;
+		expectedToken: string;
+		expiresAt: string;
+		nowIso: string;
+		/** 补全旧行缺失的明文 affinity key（只在原值为空时写入）。 */
+		affinityKey?: string | null;
+	}): Promise<boolean>;
+	/** Clear sticky binding; CAS on binding_token. Returns true when deleted. */
+	clearBinding(params: {
+		routePoolId: string;
+		affinityHash: string;
+		expectedToken: string;
+	}): Promise<boolean>;
+	/**
+	 * Admin force-clear: delete by (pool, hash) without token CAS.
+	 * Returns true when a row was deleted.
+	 */
+	forceClearBinding(params: {
+		routePoolId: string;
+		affinityHash: string;
+	}): Promise<boolean>;
+	/**
+	 * Active binding counts per target: epoch matches pool.sticky_epoch and not expired.
+	 */
+	listBindingTargetCounts(
+		routePoolId: string,
+		nowIso: string
+	): Promise<RoutePoolStickyBindingTargetCount[]>;
+	/**
+	 * Page of active bindings (epoch matches pool.sticky_epoch and not expired),
+	 * most recently updated first. `total` counts all rows matching the filter.
+	 */
+	listActiveBindings(params: {
+		routePoolId: string;
+		nowIso: string;
+		limit: number;
+		offset: number;
+		routeTargetId?: string | null;
+	}): Promise<{ rows: RoutePoolStickyActiveBindingRow[]; total: number }>;
+	/** Rows that are expired or epoch-mismatched (GC debt). */
+	countStaleBindings(routePoolId: string, nowIso: string): Promise<number>;
+	/** Best-effort table hygiene; not required for correctness. */
+	deleteStaleBefore(cutoffIso: string, limit: number): Promise<number>;
+}
+
+export interface ProvidersRepository {
+	listProviders(): Promise<ProviderAdminRow[]>;
+	providerIdExists(id: string): Promise<boolean>;
+	insertProvider(params: {
+		id: string;
+		name: string;
+		/** 导入模板英文名、`__custom__`，或空字符串。 */
+		kind?: string;
+		/** `providers.endpoints` JSON 文本 */
+		endpoints: string | null;
+		note: unknown;
+		apiKey?: string;
+		status?: string;
+		/** `providers.custom_params` JSON 文本（按协议分组的默认 headers/body），未传 = `null`。 */
+		customParams?: string | null;
+	}): Promise<void>;
+	updateProviderByPatch(id: string, body: Record<string, unknown>): Promise<number>;
+	deleteProviderById(id: string): Promise<number>;
+	getProviderById(id: string): Promise<ProviderRow | null>;
+	getProviderRowById(id: string): Promise<ProviderAdminRow | null>;
+	getProviderProtocolBases(providerId: string): Promise<ProviderProtocolBases | null>;
+	/** 读取 providers.api_key 明文（仅服务端推理/管理用）。 */
+	getProviderApiKeyPlaintext(providerId: string): Promise<{ api_key: string } | null>;
+}
+
+/** Filters for {@link RequestLogsRepository.getRequestLogsByKeyId}. If `includeStatuses` is non-empty after whitelist, use `status IN (...)`; else if `excludeStatus` is set, use `(status IS NULL OR status != ?)`; else no status predicate. */
+export type RequestLogsByKeyIdFilter = {
+	excludeStatus?: string;
+	includeStatuses?: string[];
+};
+
+/** {@link RequestLogsRepository.getRequestLogSummary} 可用的分组维度。 */
+export const REQUEST_LOG_SUMMARY_DIMENSIONS = ['provider', 'model', 'user', 'provider_key', 'route_group', 'status'] as const;
+export type RequestLogSummaryDimension = (typeof REQUEST_LOG_SUMMARY_DIMENSIONS)[number];
+
+/** 汇总行的分组键字段；未参与分组的维度不出现。`null` 表示该列在日志里为空。 */
+export type RequestLogSummaryKey = {
+	provider_id?: string | null;
+	model_id?: string | null;
+	user_id?: string | null;
+	provider_key_id?: string | null;
+	route_group?: string | null;
+	status?: string | null;
+};
+
+/**
+ * 展示快照：仅在 `includeLabels` 且对应维度参与分组时出现，取组内 `MAX()`（日志写入时的名称快照，组内通常唯一）。
+ * `null` 表示组内该列全为空。
+ */
+export type RequestLogSummaryLabels = {
+	user_email?: string | null;
+	model_name?: string | null;
+	provider_name?: string | null;
+	provider_key_label?: string | null;
+};
+
+/** 汇总指标：条数与 Token 为整数，金额为 6 位小数十进制字符串（避免浮点往返）。 */
+export type RequestLogSummaryMetrics = {
+	request_count: number;
+	success_count: number;
+	error_count: number;
+	incomplete_count: number;
+	cancelled_count: number;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_write_tokens: number;
+	reasoning_tokens: number;
+	total_tokens: number;
+	standard_cost: string;
+	metered_cost: string;
+	charged_cost: string;
+	charged_wallet_cost: string;
+	/** `status = 'error'` 的日志上的 `metered_cost` / `charged_cost` 合计，已包含在上面的总额里。 */
+	error_metered_cost: string;
+	error_charged_cost: string;
+};
+
+export type RequestLogSummaryRow = RequestLogSummaryKey & RequestLogSummaryLabels & RequestLogSummaryMetrics;
+
+export interface RequestLogsRepository {
+	getDashboardOverview(options: DashboardOverviewWindow): Promise<DashboardOverview>;
+	/**
+	 * 按维度聚合区间内请求日志（所有状态都计入）。区间为半开 `[startDate, endDate)`，两端均为 ISO 8601 UTC 时刻。
+	 * 没有日志的分组不返回行；返回行数超过 `limit` 时只保证至多 `limit` 行，调用方可传 `最大值 + 1` 判断是否越界。
+	 */
+	getRequestLogSummary(options: {
+		groupBy: RequestLogSummaryDimension[];
+		startDate: string;
+		endDate: string;
+		providerIds?: string[];
+		modelId?: string;
+		modelIdPrefix?: string;
+		routeGroup?: string;
+		status?: string;
+		/** 附带展示快照（见 {@link RequestLogSummaryLabels}）。 */
+		includeLabels?: boolean;
+		limit: number;
+		/** 跳过前 N 组（按分组键排序），默认 0。 */
+		offset?: number;
+	}): Promise<RequestLogSummaryRow[]>;
+	getRequestLogsByKeyId(
+		apiKeyId: string,
+		page: number,
+		pageSize: number,
+		filter?: RequestLogsByKeyIdFilter
+	): Promise<{ logs: RequestLogRow[]; total: number }>;
+	getRequestLogs(options: {
+		page?: number;
+		pageSize?: number;
+		/** Exact `api_key_request_logs.id`. */
+		id?: string;
+		apiKeyId?: string;
+		userId?: string;
+		userEmail?: string;
+		modelId?: string;
+		providerId?: string;
+		/** Match any of these `provider_id` values, or any provider of `providerKinds`. Combined with `providerId` when both are set. */
+		providerIds?: string[];
+		/** Provider kinds (`providers.kind`; empty string = unclassified), resolved against the current provider catalog. ORed with `providerIds`. */
+		providerKinds?: string[];
+		/** Match any of these `model_id` values, or any model of `modelVendors`. Combined with `modelId` when both are set. */
+		modelIds?: string[];
+		/** Model vendors (`models.vendor`), resolved against the current model catalog. ORed with `modelIds`. */
+		modelVendors?: string[];
+		/** Rows must match at least one group. Conditions inside a group are ANDed. Combined with the other filters by AND. */
+		anyOf?: RequestLogMatchGroup[];
+		/** `model_id` prefix match. `%`, `_`, and `\` in the prefix are escaped. */
+		modelIdPrefix?: string;
+		routeGroup?: string;
+		protocol?: string;
+		status?: string;
+		startDate?: string;
+		endDate?: string;
+	}): Promise<{ logs: RequestLogRow[]; total: number }>;
+	getRequestStatsByRange(options: {
+		startDate: string;
+		endDate: string;
+		endExclusive?: boolean;
+	}): Promise<RequestStatsByRangeRow>;
+	queryRequestTimeseries(options: {
+		startDate: string;
+		endDate: string;
+		granularity: 'hour' | 'day';
+		/** IANA 业务时区；桶键为该时区墙钟，不是 UTC。 */
+		timeZone: string;
+	}): Promise<RequestTimeseriesRow[]>;
+	queryUserTokenTimeseries(options: {
+		startDate: string;
+		endDate: string;
+		granularity: 'hour' | 'day';
+		userEmails: string[];
+	}): Promise<UserTokenTimeseriesRow[]>;
+	getThroughputLastMinute(): Promise<ThroughputSnapshot>;
+	getRecentLogs(limit: number): Promise<RequestLogRow[]>;
+	getRecentErrors(limit: number): Promise<RequestLogRow[]>;
+	getDistinctActiveUsersCount(options: { startDate: string; endDate: string; endExclusive?: boolean }): Promise<number>;
+}
+
+export interface SystemConfigRepository {
+	listSystemConfigRows(): Promise<SystemConfigRow[]>;
+	upsertSystemConfigValue(key: string, value: string): Promise<void>;
+	getConfig(key: string): Promise<string | null>;
+	getAllConfig(): Promise<Record<string, string>>;
+}

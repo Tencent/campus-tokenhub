@@ -1,0 +1,142 @@
+# campus-tokenhub 全栈部署：Postgres + OctaFuse（迁移 / Proxy / Admin）+ 门户 + Nginx
+#
+#   docker compose up -d --build              # 全部拉起
+#   docker compose up -d postgres migrate gateway-proxy gateway-admin   # 只拉网关（本地 npm run dev 调试门户时用）
+#   docker compose logs -f nginx               # 看入口路由日志
+#   docker compose down                       # 停止（保留数据卷）
+#
+# 成员自购站（campus-tokenhub-member）单站部署。
+#
+#   docker compose up -d            # 起数据库 + 门户 + 建表种子
+#   docker compose logs -f portal   # 看门户日志
+#   docker compose down             # 停止（保留数据卷）
+#
+# 本文件只包含成员站需要的服务：postgres / portal / portal-seed。
+# **没有网关**：成员站不依赖 octafuse 网关，也不参与算力发放，
+# 因此没有 gateway-proxy / gateway-admin / nginx，也没有网关库迁移。
+#
+# 双站同时部署不要用本文件，用统一采买站仓库的 deploy/docker-compose.dual.yml：
+# 两站共用一个 Postgres、一套 nginx（/tokenhub/portal 与 /tokenhub/member 分流），
+# 会话 Cookie 走公共前缀 /tokenhub，从而实现互认。
+#
+# 端口（宿主机，可用 .env 覆盖）：portal 3200 / postgres 5433
+
+name: campus-tokenhub-member
+
+services:
+  # ---------------------------------------------------------------- Postgres
+  postgres:
+    image: postgres:16-alpine
+    container_name: campus-tokenhub-member-postgres
+    restart: unless-stopped
+    environment:
+      # 口令必须在 .env 里显式配置（缺失时 compose 直接报错），不要用默认弱口令
+      POSTGRES_USER: ${POSTGRES_USER:-octafuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}
+      POSTGRES_DB: ${POSTGRES_DB:-octafuse}
+    ports:
+      # 只绑本机回环：数据库永远不该直接对外，宿主机调试用 5433
+      - '127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432'
+    volumes:
+      - octafuse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 门户外对前缀（线上 /tokenhub/portal）。Next 必须自带 basePath，见 deploy/nginx.conf.template
+        PORTAL_BASE_PATH: ${PORTAL_BASE_PATH:-}
+    image: campus-tokenhub-member:latest
+    container_name: campus-tokenhub-member
+    restart: unless-stopped
+    ports:
+      # 只绑本机回环：对外统一走 nginx；宿主机直连仅用于排障
+      - '127.0.0.1:${PORTAL_HOST_PORT:-3200}:3000'
+    env_file:
+      - .env
+    environment:
+      # 容器内走 compose 网络的服务名；宿主机端口只给学生浏览器用
+      OCTAFUSE_ADMIN_BASE: http://gateway-admin:8789
+      OCTAFUSE_PROXY_BASE: http://gateway-proxy:8787
+      # 门户自有表（portal schema）的连接串：与网关同一个库、不同 schema。
+      # 覆盖 .env 里的宿主机地址（宿主机跑 dev 时指向 127.0.0.1:5433）
+      PORTAL_DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+      # 学生浏览器直连的地址，必须是外部可达的（上反代后改成公网域名）
+      NEXT_PUBLIC_PROXY_BASE: ${NEXT_PUBLIC_PROXY_BASE:-http://localhost:8790}
+      # 侧边栏「网关管理后台 ↗」的跳转地址（浏览器打开，不能用容器内服务名）
+      ADMIN_PUBLIC_BASE_URL: ${ADMIN_PUBLIC_BASE_URL:-}
+      REQUEST_CONTENT_MAINTENANCE: ${REQUEST_CONTENT_MAINTENANCE:-on}
+      REQUEST_CONTENT_RETENTION_DAYS: ${REQUEST_CONTENT_RETENTION_DAYS:-90}
+      REQUEST_CONTENT_MAINTENANCE_INTERVAL_MS: ${REQUEST_CONTENT_MAINTENANCE_INTERVAL_MS:-3600000}
+      # 对外访问根地址：线上必须配成 https://域名，302 与同源校验只认它
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # 上 TLS / 反向代理后在 .env 里改成 true，否则浏览器会丢弃会话 Cookie
+      COOKIE_SECURE: '${COOKIE_SECURE:-false}'
+      # 运行期也要有前缀：健康检查与配置校验读的是 process.env，只写在 build.args 里容器内为空
+      PORTAL_BASE_PATH: ${PORTAL_BASE_PATH:-}
+      # 会话 Cookie 作用域（两站互认的前提）
+      #   PORTAL_COOKIE_PATH：双站同域填公共前缀 /tokenhub；单站/根路径留空（= /）
+      #   PORTAL_COOKIE_DOMAIN：留空 = host-only（同域最安全）；跨子域才设父域
+      PORTAL_COOKIE_PATH: ${PORTAL_COOKIE_PATH:-}
+      PORTAL_COOKIE_DOMAIN: ${PORTAL_COOKIE_DOMAIN:-}
+      # 引导期账号密码登录：只在 SSO 必填项未配齐时可用（见 README「首次部署没有 SSO 时」）。
+      # 留空 = 不启用；env_file 已经会带上这三项，这里显式列出是为了 `docker compose config` 能直接看到。
+      PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
+      PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
+      PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}
+      # 成员账号申请单落盘目录（必须挂卷，否则容器重建即丢全部申请）
+      PORTAL_DATA_DIR: /app/.data
+      # 本机调试要换成 localhost 地址时，不要改这里：`npm run env:local|lan` 会生成
+      # docker-compose.override.yml（compose 自动加载、不入库），只覆盖浏览器侧那几个键。
+      # 这样本文件始终是线上部署口径，部署机上没有 override 文件，行为不受影响。
+    volumes:
+      - portal_data:/app/.data
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000'+(process.env.PORTAL_BASE_PATH||'')+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ------------------------------------------- 一次性初始化数据（登录配置种子）
+  # 门户建表后写入 AIE 的 OAuth2 参数，部署完即可用学校账号登录（详见 deploy/init/010-login-config.sql）：
+  #   * 只填空值，设置页改过的配置不会被覆盖，重复部署是空操作
+  #   * 不含 client_secret：密钥只能来自 .env 的 OAUTH2_CLIENT_SECRET（DB 为空时兜底），
+  #     或部署后在「设置 → 登录认证」里填一次（加密落库）
+  portal-seed:
+    image: postgres:16-alpine
+    container_name: campus-tokenhub-member-seed
+    restart: 'no'
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}
+    volumes:
+      - ./deploy/init:/init:ro
+    command:
+      [
+        'psql', '-v', 'ON_ERROR_STOP=1',
+        '-h', 'postgres',
+        '-U', '${POSTGRES_USER:-octafuse}',
+        '-d', '${POSTGRES_DB:-octafuse}',
+        '-f', '/init/010-login-config.sql',
+      ]
+    depends_on:
+      # 表由门户启动时的 ensurePortalSchema 创建，必须等门户起来再写
+      portal:
+        condition: service_healthy
+
+volumes:
+  octafuse_pgdata:
+  # 成员账号申请单：单实例假设（JSON 文件存储，多副本会互相覆盖）
+  portal_data:

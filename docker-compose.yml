@@ -1,0 +1,279 @@
+# 双站同域部署（自包含）：一份 compose 同时起统一采买站 + 成员自购站。
+#
+# 对外只有一个入口 —— nginx 的 8088：
+#   http://<host>:8088/tokenhub/portal   统一采买站（assign）
+#   http://<host>:8088/tokenhub/member   成员自购站（member）
+#   http://<host>:8088/tokenhub/admin    网关管理后台
+#   http://<host>:8088/tokenhub/...      推理网关（/v1、health、WebSocket）
+#
+# 两站共享同一个 Postgres 与同一份 portal_shared schema：
+#   - 管理员名单 portal_shared.admins 只有一份，任一站增删对另一站立即生效；
+#   - 登录配置、品牌配置也只有一份。
+# 两站共享会话 Cookie：SESSION_SECRET 相同 + PORTAL_COOKIE_PATH=/tokenhub，
+# 在任一站登录后另一站免登录。
+#
+# ── 起法（在项目根 campus-tokenhub/ 执行）────────────────────────────────────
+#   # 先停掉旧的两种单站栈，避免 8088 / 5433 端口冲突
+#   (cd campus-tokenhub-assign && docker compose down)
+#   (cd campus-tokenhub-member && docker compose down)
+#   # 再起本文件；env 复用双站专用配置（密钥、口令、对外地址都在里面）
+#   docker compose --env-file ./campus-tokenhub-assign/.env.dual up -d --build
+#
+# ── 数据注意 ──────────────────────────────────────────────────────────────
+#   本文件使用独立的共享卷 campus-tokenhub-both_pgdata，与两套单站栈的卷隔离。
+#   全新部署直接用；若要迁移旧数据，需先把单站库里的 portal / member schema
+#   导入这个共享库，不要指望卷自动复用。
+#
+# ── 部署前缀 ──────────────────────────────────────────────────────────────
+# 两站的应用前缀只在这里定义一次：编译期 basePath、运行期健康检查、管理台回跳门户的
+# 登录/登出地址都从这里取，避免「改了 PORTAL_BASE_PATH 但 PORTAL_LOGOUT_URL 还写死」。
+# 注意：nginx 模板（deploy/nginx.conf.template）里的 location / rewrite 仍是字面量，
+# 改这两个值必须同步改模板（并用 `npm run test:admin-nginx` 验证）。
+#
+# ── 只部署其中一站 ────────────────────────────────────────────────────────
+#   不要用本文件，用各子仓库目录下的 docker-compose.yml。
+
+name: campus-tokenhub-both
+
+services:
+  # ---------------------------------------------------------------- Postgres
+  # 两站共用一个库：共享层 portal_shared 只此一份。
+  postgres:
+    image: postgres:16-alpine
+    container_name: campus-tokenhub-both-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-octafuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}
+      POSTGRES_DB: ${POSTGRES_DB:-octafuse}
+    ports:
+      # 只绑回环：数据库不对外，宿主机排障用
+      - '127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------------------------------------------------------------- 网关迁移
+  # 建 gateway 的表；幂等，重复执行安全。
+  migrate:
+    build:
+      context: ./campus-tokenhub-assign/local-stack/octafuse-gateway
+      dockerfile: Dockerfile.migrate
+    image: octafuse-migrate:both
+    container_name: campus-tokenhub-both-migrate
+    restart: 'no'
+    environment:
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- 网关服务
+  # assign 站的发 Key、额度、模型目录、管理后台依赖这两个服务；
+  # member 站不依赖网关，但同一份 compose 里一并起，对外统一走 nginx。
+  gateway-admin:
+    build:
+      context: ./campus-tokenhub-assign/local-stack/octafuse-gateway
+      dockerfile: Dockerfile.admin
+      args:
+        # 必须与镜像构建期一致（入口脚本会自检，不一致直接 exit 1）
+        ADMIN_UI_PUBLIC_PATH: /tokenhub/admin
+    image: octafuse-admin:both
+    container_name: campus-tokenhub-both-gateway-admin
+    restart: unless-stopped
+    environment:
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+      PORT: '8789'
+      ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:?OCTAFUSE_ADMIN_USERNAME_MUST_BE_SET}
+      ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
+      ADMIN_COOKIE_SECURE: ''
+      ADMIN_UI_PUBLIC_PATH: /tokenhub/admin
+      # 管理台复用门户会话：同 SESSION_SECRET，登录后两边都能进
+      PORTAL_SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET_MUST_BE_SET}
+      PORTAL_LOGIN_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}${PORTAL_ASSIGN_BASE_PATH:-/tokenhub/portal}/login
+      PORTAL_LOGOUT_URL: http://portal:3000${PORTAL_ASSIGN_BASE_PATH:-/tokenhub/portal}/api/auth/logout
+      ADMIN_AUTH_MODE: portal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8789/dashboard').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  gateway-proxy:
+    build:
+      context: ./campus-tokenhub-assign/local-stack/octafuse-gateway
+      dockerfile: Dockerfile.proxy
+    image: octafuse-proxy:both
+    container_name: campus-tokenhub-both-gateway-proxy
+    restart: unless-stopped
+    environment:
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+      PORT: '8787'
+      REQUEST_CONTENT_CAPTURE: ${REQUEST_CONTENT_CAPTURE:-on}
+    ports:
+      # 「在线调试台」浏览器直连地址（NEXT_PUBLIC_PROXY_BASE）
+      - '127.0.0.1:${GATEWAY_PROXY_HOST_PORT:-8790}:8787'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------- 统一采买站
+  portal:
+    build:
+      context: ./campus-tokenhub-assign
+      dockerfile: Dockerfile
+      args:
+        # 构建期生效：Next 的 basePath 编译进产物，改了必须 --build
+        PORTAL_BASE_PATH: ${PORTAL_ASSIGN_BASE_PATH:-/tokenhub/portal}
+    image: campus-tokenhub-assign:both
+    container_name: campus-tokenhub-both-assign
+    restart: unless-stopped
+    # 运行期密钥/口令/对外地址复用双站 env 文件
+    env_file:
+      - ./campus-tokenhub-assign/.env.dual
+    environment:
+      PORTAL_DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+      PORTAL_BASE_PATH: ${PORTAL_ASSIGN_BASE_PATH:-/tokenhub/portal}
+      # 公共前缀：两站会话互认的前提
+      PORTAL_COOKIE_PATH: /tokenhub
+      PORTAL_COOKIE_DOMAIN: ${PORTAL_COOKIE_DOMAIN:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}
+      # 侧边栏「成员账号 ↗」指向 8088 上的成员站（本文件核心）
+      MEMBER_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}/tokenhub/member
+      COOKIE_SECURE: '${COOKIE_SECURE:-false}'
+      OCTAFUSE_ADMIN_BASE: ${OCTAFUSE_ADMIN_BASE:-http://gateway-admin:8789}
+      OCTAFUSE_PROXY_BASE: ${OCTAFUSE_PROXY_BASE:-http://gateway-proxy:8787}
+      NEXT_PUBLIC_PROXY_BASE: ${NEXT_PUBLIC_PROXY_BASE:-http://localhost:8790}
+      OCTAFUSE_ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:?OCTAFUSE_ADMIN_USERNAME_MUST_BE_SET}
+      OCTAFUSE_ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
+      OCTAFUSE_EXTERNAL_SYSTEM: ${OCTAFUSE_EXTERNAL_SYSTEM:-campus-tokenhub}
+      PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
+      PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
+      PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}
+      PORTAL_DATA_DIR: /app/.data
+    volumes:
+      - assign_data:/app/.data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway-admin:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000${PORTAL_ASSIGN_BASE_PATH:-/tokenhub/portal}/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------- 成员自购站
+  portal-member:
+    build:
+      context: ./campus-tokenhub-member
+      dockerfile: Dockerfile
+      args:
+        # 关键：basePath 必须与 nginx 的成员站前缀一致，nginx 才能按前缀分流，
+        # 页面里的 _next 资源与接口才会带正确前缀
+        PORTAL_BASE_PATH: ${PORTAL_MEMBER_BASE_PATH:-/tokenhub/member}
+    image: campus-tokenhub-member:both
+    container_name: campus-tokenhub-both-member
+    restart: unless-stopped
+    env_file:
+      - ./campus-tokenhub-assign/.env.dual
+    environment:
+      PORTAL_DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+      PORTAL_BASE_PATH: ${PORTAL_MEMBER_BASE_PATH:-/tokenhub/member}
+      PORTAL_COOKIE_PATH: /tokenhub
+      PORTAL_COOKIE_DOMAIN: ${PORTAL_COOKIE_DOMAIN:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}
+      COOKIE_SECURE: '${COOKIE_SECURE:-false}'
+      NEXT_PUBLIC_PROXY_BASE: ${NEXT_PUBLIC_PROXY_BASE:-http://localhost:8790}
+      # 成员站不依赖网关：不注入任何 OCTAFUSE_*
+      PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
+      PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
+      PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}
+      PORTAL_DATA_DIR: /app/.data
+    volumes:
+      - member_data:/app/.data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000${PORTAL_MEMBER_BASE_PATH:-/tokenhub/member}/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # --------------------------------------------------- 一次性登录配置种子
+  # 只填空值，设置页改过的不覆盖；重复部署是空操作。
+  portal-seed:
+    image: postgres:16-alpine
+    container_name: campus-tokenhub-both-seed
+    restart: 'no'
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}
+    volumes:
+      - ./campus-tokenhub-assign/deploy/init:/init:ro
+    command:
+      [
+        'psql', '-v', 'ON_ERROR_STOP=1',
+        '-h', 'postgres',
+        '-U', '${POSTGRES_USER:-octafuse}',
+        '-d', '${POSTGRES_DB:-octafuse}',
+        '-f', '/init/010-login-config.sql',
+      ]
+    depends_on:
+      portal:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------- 入口
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: campus-tokenhub-both-nginx
+    restart: unless-stopped
+    volumes:
+      # 同一份模板已配好 portal / member / admin / gateway 四段分流
+      - ./campus-tokenhub-assign/deploy/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      NGINX_PUBLIC_PROTO: ${NGINX_PUBLIC_PROTO:-http}
+      NGINX_RESOLVER: ${NGINX_RESOLVER:-127.0.0.11}
+    ports:
+      - '${NGINX_HOST_BIND:-0.0.0.0}:${NGINX_HOST_PORT:-8088}:80'
+    depends_on:
+      portal:
+        condition: service_healthy
+      portal-member:
+        condition: service_healthy
+      gateway-proxy:
+        condition: service_started
+      gateway-admin:
+        condition: service_healthy
+      portal-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  # 共享库：管理员名单、登录配置、品牌都在这里
+  pgdata:
+  assign_data:
+  member_data:

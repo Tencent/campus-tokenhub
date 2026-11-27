@@ -1,0 +1,35 @@
+# Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+# This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+
+node_modules
+.git
+.wrangler
+**/.next
+**/.next.bak*
+**/dist
+packages/admin/ui-dist
+packages/admin/node-server-dist
+.env.local
+# 本地 Node 原生模式用的软链（packages/*/.env.local -> ../../.env.local），
+# 不能带进 Docker 构建上下文，否则 Next.js 在 build 阶段 stat 到悬空软链会报 ENOENT。
+packages/admin/.env.local
+packages/proxy/.env.local
+*.log
+
+# CI / 文档 / 示例（不参与镜像构建）
+.github
+docs
+docker/examples
+
+# 编辑器与元数据
+.idea
+.vscode
+*.md
+!packages/**/README.md
+
+# 测试与覆盖率
+**/test
+**/__tests__
+**/*.test.ts
+**/*.spec.ts
+coverage

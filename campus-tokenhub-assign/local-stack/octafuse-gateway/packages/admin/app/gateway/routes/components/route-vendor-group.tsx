@@ -1,0 +1,120 @@
+'use client';
+
+import { ModelVendorIcon } from '@/components/model-vendor-icon';
+import { getModelVendorLabel } from '@/lib/model-vendor';
+import { useTranslations } from 'next-intl';
+import type { GatewayModel, GatewayProvider } from '@/lib/types';
+import type { RouteFlowDensity, RouteListRow } from '../types';
+import type { RouteModelGroup } from '../route-utils';
+import { RouteModelFlow } from './route-model-flow';
+
+type Props = {
+	vendor: string;
+	cards: RouteModelGroup[];
+	showHeader: boolean;
+	vendorGroupIdx: number;
+	modelMeta: Map<string, GatewayModel>;
+	providerMeta: Map<string, GatewayProvider>;
+	globalRouteStrategy: string | null;
+	density: RouteFlowDensity;
+	copiedModelId: string | null;
+	togglingId: string | null;
+	onCopyModelId: (modelId: string) => void;
+	onCreate: (modelId: string, preset?: { protocol?: string; operation?: string; group?: string }) => void;
+	onEdit: (route: RouteListRow) => void;
+	onEditModel: (modelId: string) => void;
+	onToggleStatus: (route: RouteListRow) => void;
+	onOpenStrategyDialog: (
+		modelId: string,
+		modelTitle: string,
+		protocol: string,
+		protocolLabel: string,
+		group: string,
+		poolId?: string | null,
+		poolStrategy?: string | null,
+		requestOperation?: string,
+		extras?: { priority?: number; poolTierStrategies?: string | null }
+	) => void;
+	onOpenProviderStickyDialog: (
+		modelId: string,
+		modelTitle: string,
+		protocol: string,
+		protocolLabel: string,
+		group: string,
+		requestOperation: string,
+		poolId: string | null,
+		enabled: boolean,
+		idleTtlSeconds: number,
+		targets: Array<{ id: string; providerName: string; priority: number; weight: number }>,
+		initialTargetId?: string
+	) => void;
+};
+
+export function RouteVendorGroup(props: Props) {
+	const {
+		vendor,
+		cards,
+		showHeader,
+		modelMeta,
+		providerMeta,
+		globalRouteStrategy,
+		density,
+		copiedModelId,
+		togglingId,
+		onCopyModelId,
+		onCreate,
+		onEdit,
+		onEditModel,
+		onToggleStatus,
+		onOpenStrategyDialog,
+		onOpenProviderStickyDialog,
+	} = props;
+
+	const t = useTranslations('routes.vendor');
+
+	return (
+		<section className="route-vendor-section min-w-0">
+			{showHeader ? (
+				<div
+					className="route-vendor-heading mb-4 flex items-center justify-between gap-3"
+				>
+					<div className="flex min-w-0 items-center gap-2.5">
+						<ModelVendorIcon vendor={vendor} size="default" />
+						<div className="min-w-0">
+							<h3 className="truncate text-base font-medium text-gray-900">
+								{getModelVendorLabel(vendor)}
+							</h3>
+
+						</div>
+					</div>
+					<span className="shrink-0 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium tabular-nums text-gray-600 ring-1 ring-inset ring-gray-200">
+						{cards.length === 1
+							? t('modelCount', { count: cards.length })
+							: t('modelCountPlural', { count: cards.length })}
+					</span>
+				</div>
+			) : null}
+			<div className="route-vendor-models space-y-4">
+				{cards.map((card) => (
+					<RouteModelFlow
+						key={card.model_id}
+						card={card}
+						meta={modelMeta.get(card.model_id)}
+						providerMeta={providerMeta}
+						globalRouteStrategy={globalRouteStrategy}
+						density={density}
+						copiedModelId={copiedModelId}
+						togglingId={togglingId}
+						onCopyModelId={onCopyModelId}
+						onCreate={onCreate}
+						onEdit={onEdit}
+						onEditModel={onEditModel}
+						onToggleStatus={onToggleStatus}
+						onOpenStrategyDialog={onOpenStrategyDialog}
+						onOpenProviderStickyDialog={onOpenProviderStickyDialog}
+					/>
+				))}
+			</div>
+		</section>
+	);
+}

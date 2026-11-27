@@ -1,0 +1,541 @@
+'use client';
+
+import { useCallback, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { useFeedback } from '@/components/feedback';
+import { parseModelModalitiesJson } from '@octafuse/core/db/model-modalities';
+import { resolveModelKind } from '@octafuse/core/db/model-kind';
+import {
+	createDefaultAudioCharacterPricingDraft,
+	createDefaultAudioPricingDraft,
+	createDefaultAudioTokenPricingDraft,
+	createDefaultImagePerImageDraft,
+	createDefaultEmbeddingTierRow,
+	createDefaultImageTokenTierRow,
+	imagePricingRowsForMode,
+	createDefaultNewModelTierRow,
+	draftRowsHaveImageTokenPrices,
+	draftRowsLookLikeImageOnly,
+	profileJsonToAudioDraftState,
+	profileJsonToCatalogScheduleDraft,
+	profileJsonToDraftState,
+	type AudioPricingDraftState,
+	type CatalogScheduleFormWindow,
+	type ImageBillingModeDraft,
+	type ImagePerImageDraft,
+	type ImagePricingDraftState,
+	type PricingTierDraftRow,
+} from '@/lib/pricing-tiers-draft';
+import { normalizeModelVendorInput } from '@/lib/model-vendor';
+import { useBillingCurrency } from '@/lib/use-billing-currency';
+import { deleteModel, fetchModelDetail, saveModel } from './model-api';
+import { modelFormForDuplicate } from './model-duplicate';
+import { formatMetadataForEditor } from './model-utils';
+import {
+	EMPTY_ASR_MODEL_FORM,
+	EMPTY_TTS_MODEL_FORM,
+	EMPTY_EMBEDDING_MODEL_FORM,
+	EMPTY_IMAGE_MODEL_FORM,
+	EMPTY_MODEL_FORM,
+	type ModelFormData,
+	type ModelFormKind,
+	type ModelListItem,
+} from './types';
+
+type Options = {
+	/** 保存 / 删除成功后回调（例如刷新 Routes / Models 列表） */
+	onChanged?: () => void | Promise<void>;
+};
+
+function createInitialImagePricingDraft(mode: ImageBillingModeDraft = 'token'): ImagePricingDraftState {
+	if (mode === 'per_image') {
+		return {
+			mode: 'per_image',
+			tiers: [],
+			perImage: createDefaultImagePerImageDraft(),
+		};
+	}
+	return {
+		mode: 'token',
+		tiers: [createDefaultImageTokenTierRow()],
+		perImage: createDefaultImagePerImageDraft(),
+	};
+}
+
+/**
+ * ModelModal 编辑态：可在 Models 页与 Routes 页复用（Routes 就地弹窗改 Tag 等）。
+ */
+export function useModelEditModal(options?: Options) {
+	const onChanged = options?.onChanged;
+	const tModal = useTranslations('models.modal');
+	const tCommon = useTranslations('common');
+	const { notify, confirm } = useFeedback();
+	const { currency: billingCurrency } = useBillingCurrency();
+	const editLoadGenRef = useRef(0);
+	const [showModal, setShowModal] = useState(false);
+	const [editingModel, setEditingModel] = useState<ModelListItem | null>(null);
+	const [duplicateSourceModelId, setDuplicateSourceModelId] = useState<string | null>(null);
+	const [formData, setFormData] = useState<ModelFormData>(EMPTY_MODEL_FORM);
+	const [formKind, setFormKind] = useState<ModelFormKind>('llm');
+	const [pricingTierRows, setPricingTierRows] = useState<PricingTierDraftRow[]>([]);
+	const [catalogScheduleWindows, setCatalogScheduleWindows] = useState<CatalogScheduleFormWindow[]>(
+		[]
+	);
+	const [imageBillingMode, setImageBillingMode] = useState<ImageBillingModeDraft>('token');
+	const [imagePerImageDraft, setImagePerImageDraft] = useState<ImagePerImageDraft>(
+		createDefaultImagePerImageDraft()
+	);
+	const [audioPricingDraft, setAudioPricingDraft] = useState<AudioPricingDraftState>(
+		createDefaultAudioPricingDraft()
+	);
+	const [tagInput, setTagInput] = useState('');
+	const [saveError, setSaveError] = useState('');
+	const [isSaving, setIsSaving] = useState(false);
+	const [isDeleting, setIsDeleting] = useState(false);
+
+	const applyImagePricingDraft = useCallback((draft: ImagePricingDraftState) => {
+		setImageBillingMode(draft.mode);
+		setPricingTierRows(draft.tiers);
+		setImagePerImageDraft(draft.perImage);
+	}, []);
+
+	const fillFormFromModel = useCallback(
+		(model: ModelListItem) => {
+			const listTags = Array.isArray(model.tags) ? model.tags : [];
+			const outputMods = parseModelModalitiesJson(model.output_modalities) ?? ['text'];
+			const kind: ModelFormKind = resolveModelKind({
+				input_modalities: model.input_modalities,
+				output_modalities: model.output_modalities,
+				pricing_profile: model.pricing_profile,
+			});
+			const imageModel = kind === 'image';
+			const audioModel = kind === 'asr' || kind === 'tts';
+			const embeddingModel = kind === 'embedding';
+			setFormKind(kind);
+			setFormData({
+				id: model.id,
+				display_name: model.display_name || '',
+				vendor: normalizeModelVendorInput(model.vendor),
+				context_window: imageModel || audioModel ? '' : model.context_window?.toString() || '',
+				max_tokens: imageModel || audioModel || embeddingModel ? '' : model.max_tokens?.toString() || '4096',
+				input_modalities: parseModelModalitiesJson(model.input_modalities) ?? ['text'],
+				output_modalities: outputMods,
+				released_at: model.released_at ?? '',
+				tags: listTags,
+				note: model.note ?? '',
+				metadata: formatMetadataForEditor(model.metadata),
+			});
+			if (audioModel) {
+				setAudioPricingDraft(profileJsonToAudioDraftState(model.pricing_profile));
+				setPricingTierRows([]);
+			} else {
+				applyImagePricingDraft(profileJsonToDraftState(model.pricing_profile));
+			}
+			setCatalogScheduleWindows(profileJsonToCatalogScheduleDraft(model.pricing_profile));
+		},
+		[applyImagePricingDraft]
+	);
+
+	const handleCreate = useCallback(
+		(presetVendorKey?: string, kind: ModelFormKind = 'llm') => {
+			editLoadGenRef.current += 1;
+			setEditingModel(null);
+			setDuplicateSourceModelId(null);
+			setFormKind(kind);
+			const vendor = presetVendorKey !== undefined ? presetVendorKey : EMPTY_MODEL_FORM.vendor;
+			if (kind === 'image') {
+				setFormData({
+					...EMPTY_IMAGE_MODEL_FORM,
+					vendor,
+				});
+				applyImagePricingDraft(createInitialImagePricingDraft('token'));
+			} else if (kind === 'embedding') {
+				setFormData({
+					...EMPTY_EMBEDDING_MODEL_FORM,
+					vendor,
+				});
+				setPricingTierRows([createDefaultEmbeddingTierRow()]);
+			} else if (kind === 'asr' || kind === 'tts') {
+				setFormData({
+					...(kind === 'tts' ? EMPTY_TTS_MODEL_FORM : EMPTY_ASR_MODEL_FORM),
+					vendor,
+				});
+				setAudioPricingDraft(
+					kind === 'tts' ? createDefaultAudioCharacterPricingDraft() : createDefaultAudioPricingDraft()
+				);
+				setPricingTierRows([]);
+			} else {
+				setFormData({
+					...EMPTY_MODEL_FORM,
+					vendor,
+				});
+				setPricingTierRows([createDefaultNewModelTierRow()]);
+				setImageBillingMode('token');
+				setImagePerImageDraft(createDefaultImagePerImageDraft());
+			}
+			setCatalogScheduleWindows([]);
+			setShowModal(true);
+			setSaveError('');
+		},
+		[applyImagePricingDraft]
+	);
+
+	const handleImageBillingModeChange = useCallback((mode: ImageBillingModeDraft) => {
+		setImageBillingMode(mode);
+		setPricingTierRows((rows) => imagePricingRowsForMode(rows, mode));
+	}, []);
+
+	/** 切换 Kind：同步 modalities / token 字段，并在无对应单价时写入默认档。 */
+	const applyFormKind = useCallback((kind: ModelFormKind) => {
+		setFormKind(kind);
+		if (kind === 'image') {
+			setFormData((prev) => ({
+				...prev,
+				input_modalities: prev.input_modalities.includes('image')
+					? prev.input_modalities
+					: [...prev.input_modalities, 'image'],
+				output_modalities: prev.output_modalities.includes('image')
+					? prev.output_modalities
+					: ['image'],
+				context_window: '',
+				max_tokens: '',
+			}));
+			setImageBillingMode((mode) => {
+				if (mode === 'per_image') {
+					setPricingTierRows([]);
+				} else {
+					setPricingTierRows((rows) =>
+						draftRowsHaveImageTokenPrices(rows)
+							? rows
+							: [createDefaultImageTokenTierRow()]
+					);
+				}
+				return mode;
+			});
+			return;
+		}
+		if (kind === 'embedding') {
+			setFormData((prev) => ({
+				...prev,
+				input_modalities: ['text'],
+				output_modalities: ['embedding'],
+				max_tokens: '',
+			}));
+			setPricingTierRows((rows) =>
+				rows.length === 0 || draftRowsLookLikeImageOnly(rows) ? [createDefaultEmbeddingTierRow()] : rows
+			);
+			return;
+		}
+		if (kind === 'asr') {
+			// ASR：输入 audio、输出 text；计费按秒或 token。
+			setFormData((prev) => ({
+				...prev,
+				input_modalities: ['audio'],
+				output_modalities: ['text'],
+				context_window: '',
+				max_tokens: '',
+			}));
+			setAudioPricingDraft((prev) => {
+				if (prev.mode === 'per_character') return createDefaultAudioPricingDraft();
+				if (prev.mode === 'token') {
+					const hasTier = prev.tiers.some(
+						(r) => r.input_price.trim() !== '' || r.output_price.trim() !== ''
+					);
+					return hasTier ? prev : createDefaultAudioTokenPricingDraft();
+				}
+				return prev.price_per_second.trim() !== '' ? prev : createDefaultAudioPricingDraft();
+			});
+			setPricingTierRows([]);
+			return;
+		}
+		if (kind === 'tts') {
+			// TTS：输入 text、输出 audio；只支持按字符计费。
+			setFormData((prev) => ({
+				...prev,
+				input_modalities: ['text'],
+				output_modalities: ['audio'],
+				context_window: '',
+				max_tokens: '',
+			}));
+			setAudioPricingDraft((prev) =>
+				prev.mode === 'per_character' && prev.price_per_character.trim() !== ''
+					? prev
+					: createDefaultAudioCharacterPricingDraft()
+			);
+			setPricingTierRows([]);
+			return;
+		}
+		setFormData((prev) => {
+			const withoutImage = prev.output_modalities.filter((m) => m !== 'image' && m !== 'embedding');
+			const input = prev.input_modalities.includes('text')
+				? prev.input_modalities
+				: ['text', ...prev.input_modalities.filter((m) => m !== 'audio')];
+			return {
+				...prev,
+				input_modalities: input.length > 0 ? input : ['text'],
+				output_modalities: withoutImage.length > 0 ? withoutImage : ['text'],
+				max_tokens: prev.max_tokens.trim() !== '' ? prev.max_tokens : '8192',
+			};
+		});
+		setPricingTierRows((rows) =>
+			rows.length === 0 || draftRowsLookLikeImageOnly(rows)
+				? [createDefaultNewModelTierRow()]
+				: rows
+		);
+	}, []);
+
+	const handleEdit = useCallback(
+		async (model: ModelListItem) => {
+			const loadGen = ++editLoadGenRef.current;
+			setDuplicateSourceModelId(null);
+			setEditingModel(model);
+			fillFormFromModel(model);
+			try {
+				const fullModel = await fetchModelDetail(model.id);
+				if (editLoadGenRef.current !== loadGen) return;
+				setEditingModel(fullModel);
+				fillFormFromModel(fullModel);
+			} catch (error) {
+				if (editLoadGenRef.current !== loadGen) return;
+				console.error('Fetch model details error:', error);
+			}
+			if (editLoadGenRef.current !== loadGen) return;
+			setShowModal(true);
+			setSaveError('');
+		},
+		[fillFormFromModel]
+	);
+
+	const handleDuplicate = useCallback(() => {
+		if (!editingModel) return;
+		editLoadGenRef.current += 1;
+		const sourceId = editingModel.id;
+		setDuplicateSourceModelId(sourceId);
+		setEditingModel(null);
+		setFormData((current) =>
+			modelFormForDuplicate(current, (name) => tModal('copyDisplayName', { name }))
+		);
+		setPricingTierRows((rows) => structuredClone(rows));
+		setCatalogScheduleWindows((windows) => structuredClone(windows));
+		setImagePerImageDraft((draft) => structuredClone(draft));
+		setAudioPricingDraft((draft) => structuredClone(draft));
+		setTagInput('');
+		setSaveError('');
+	}, [editingModel, tModal]);
+
+	/** Routes 等场景：仅有 model id 时拉取详情并打开弹窗。 */
+	const openEditById = useCallback(
+		async (modelId: string) => {
+			const loadGen = ++editLoadGenRef.current;
+			setDuplicateSourceModelId(null);
+			setSaveError('');
+			try {
+				const fullModel = await fetchModelDetail(modelId);
+				if (editLoadGenRef.current !== loadGen) return;
+				setEditingModel(fullModel);
+				fillFormFromModel(fullModel);
+				setShowModal(true);
+			} catch (error) {
+				if (editLoadGenRef.current !== loadGen) return;
+				console.error('Fetch model details error:', error);
+				notify('error', tCommon('failedToLoadModels'));
+			}
+		},
+		[fillFormFromModel, notify, tCommon]
+	);
+
+	const handleDelete = useCallback(
+		async (id: string) => {
+			const ok = await confirm({
+				title: tModal('deleteModel'),
+				message: tModal('confirmDelete'),
+				confirmLabel: tCommon('delete'),
+				danger: true,
+			});
+			if (!ok) return;
+
+			setIsDeleting(true);
+			try {
+				const result = await deleteModel(id);
+				if (result.success) {
+					setShowModal(false);
+					setEditingModel(null);
+					setDuplicateSourceModelId(null);
+					await onChanged?.();
+				} else {
+					notify('error', result.message || tCommon('failed'));
+				}
+			} catch (error) {
+				console.error('Delete error:', error);
+				notify('error', tCommon('failed'));
+			} finally {
+				setIsDeleting(false);
+			}
+		},
+		[confirm, notify, onChanged, tCommon, tModal]
+	);
+
+	const handleAddTag = useCallback(() => {
+		const next = tagInput.trim();
+		if (next && !formData.tags.includes(next)) {
+			setFormData({ ...formData, tags: [...formData.tags, next] });
+			setTagInput('');
+		}
+	}, [formData, tagInput]);
+
+	const handleRemoveTag = useCallback((tag: string) => {
+		setFormData((prev) => ({ ...prev, tags: prev.tags.filter((x) => x !== tag) }));
+	}, []);
+
+	const toggleFormModality = useCallback(
+		(kind: 'input_modalities' | 'output_modalities', modality: string) => {
+			setFormData((prev) => {
+				if (kind === 'output_modalities' && modality === 'embedding') {
+					// Embedding 与其它输出模态互斥
+					return prev.output_modalities.includes('embedding')
+						? { ...prev, output_modalities: ['text'] }
+						: { ...prev, output_modalities: ['embedding'], max_tokens: '' };
+				}
+				const current =
+					kind === 'output_modalities' ? prev[kind].filter((m) => m !== 'embedding') : prev[kind];
+				const next = current.includes(modality)
+					? current.filter((m) => m !== modality)
+					: [...current, modality];
+				const nextList = next.length > 0 ? next : [modality];
+				if (kind === 'output_modalities' && nextList.includes('image')) {
+					setFormKind('image');
+					setImageBillingMode((mode) => {
+						if (mode === 'per_image') {
+							setPricingTierRows([]);
+						} else {
+							setPricingTierRows((rows) =>
+								draftRowsHaveImageTokenPrices(rows)
+									? rows
+									: [createDefaultImageTokenTierRow()]
+							);
+						}
+						return mode;
+					});
+					return {
+						...prev,
+						[kind]: nextList,
+						context_window: '',
+						max_tokens: '',
+					};
+				}
+				if (
+					kind === 'output_modalities' &&
+					!nextList.includes('image') &&
+					prev.output_modalities.includes('image')
+				) {
+					setFormKind((fk) => (fk === 'image' ? 'llm' : fk));
+					setPricingTierRows((rows) =>
+						draftRowsLookLikeImageOnly(rows) ? [createDefaultNewModelTierRow()] : rows
+					);
+					return {
+						...prev,
+						[kind]: nextList,
+						max_tokens: prev.max_tokens.trim() !== '' ? prev.max_tokens : '8192',
+					};
+				}
+				return { ...prev, [kind]: nextList };
+			});
+		},
+		[]
+	);
+
+	const handleSave = useCallback(async () => {
+		setSaveError('');
+		setIsSaving(true);
+		try {
+			const isImage = formKind === 'image';
+			const isAudio = formKind === 'asr' || formKind === 'tts';
+			const imageDraft: ImagePricingDraftState | null =
+				isImage && !isAudio
+					? {
+							mode: imageBillingMode,
+							tiers: pricingTierRows,
+							perImage: imagePerImageDraft,
+						}
+					: null;
+			const audioDraft: AudioPricingDraftState | null = isAudio ? audioPricingDraft : null;
+			const result = await saveModel(
+				formData,
+				pricingTierRows,
+				editingModel?.id ?? null,
+				imageDraft,
+				audioDraft,
+				catalogScheduleWindows
+			);
+			if (result.success) {
+				setShowModal(false);
+				setEditingModel(null);
+				setDuplicateSourceModelId(null);
+				await onChanged?.();
+			} else {
+				setSaveError(result.message);
+			}
+		} catch (error) {
+			console.error('Save error:', error);
+			setSaveError('Save failed, please try again');
+		} finally {
+			setIsSaving(false);
+		}
+	}, [
+		audioPricingDraft,
+		catalogScheduleWindows,
+		editingModel,
+		formData,
+		formKind,
+		imageBillingMode,
+		imagePerImageDraft,
+		onChanged,
+		pricingTierRows,
+	]);
+
+	const closeModal = useCallback(() => {
+		if (isSaving || isDeleting) return;
+		setShowModal(false);
+	}, [isDeleting, isSaving]);
+
+	const handleRoutesChanged = useCallback(async () => {
+		await onChanged?.();
+	}, [onChanged]);
+
+	return {
+		billingCurrency,
+		showModal,
+		editingModel,
+		duplicateSourceModelId,
+		formData,
+		setFormData,
+		formKind,
+		pricingTierRows,
+		setPricingTierRows,
+		catalogScheduleWindows,
+		setCatalogScheduleWindows,
+		imageBillingMode,
+		setImageBillingMode: handleImageBillingModeChange,
+		imagePerImageDraft,
+		setImagePerImageDraft,
+		audioPricingDraft,
+		setAudioPricingDraft,
+		tagInput,
+		setTagInput,
+		saveError,
+		isSaving,
+		isDeleting,
+		handleCreate,
+		applyFormKind,
+		handleEdit,
+		handleDuplicate,
+		openEditById,
+		handleDelete,
+		handleRoutesChanged,
+		handleAddTag,
+		handleRemoveTag,
+		toggleFormModality,
+		handleSave,
+		closeModal,
+	};
+}

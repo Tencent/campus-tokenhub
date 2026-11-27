@@ -1,0 +1,118 @@
+/*
+ * Modified by the campus-tokenhub project (Tencent), 2026-11-27.
+ * This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+ */
+
+/**
+ * 管理后台侧栏路由（不含图标）。DocumentTitle 与 Sidebar 共用，保证标签页标题与导航文案一致。
+ */
+
+export type AdminNavNameKey =
+	| 'dashboard'
+	| 'providers'
+	| 'models'
+	| 'routes'
+	| 'playground'
+	| 'simulator'
+	| 'users'
+	| 'apiKeys'
+	| 'requestLogs'
+	| 'auditLogs'
+	| 'toolsConfig'
+	| 'mcpServers'
+	| 'modelUsage'
+	| 'providerUsage'
+	| 'userUsage'
+	| 'reliability'
+	| 'adminApiKeys'
+	| 'config'
+	| 'maintenance';
+
+export type AdminNavGroupKey = 'overview' | 'models' | 'testing' | 'user' | 'tools' | 'logs' | 'analytics' | 'system';
+
+export interface AdminNavRoute {
+	nameKey: AdminNavNameKey;
+	href: string;
+}
+
+export interface AdminNavGroup {
+	groupKey: AdminNavGroupKey;
+	items: AdminNavRoute[];
+}
+
+export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
+	{
+		groupKey: 'overview',
+		items: [{ nameKey: 'dashboard', href: '/dashboard' }],
+	},
+	{
+		groupKey: 'models',
+		items: [
+			{ nameKey: 'providers', href: '/gateway/providers' },
+			{ nameKey: 'models', href: '/gateway/models' },
+			{ nameKey: 'routes', href: '/gateway/routes' },
+		],
+	},
+	// 「工具」分组（REST 服务 / MCP 服务）在校级门户中不开放，仅保留页面与直达地址。
+	{
+		groupKey: 'testing',
+		items: [
+			{ nameKey: 'playground', href: '/gateway/playground' },
+			{ nameKey: 'simulator', href: '/gateway/simulator' },
+		],
+	},
+	{
+		groupKey: 'user',
+		items: [
+			{ nameKey: 'users', href: '/gateway/users' },
+			{ nameKey: 'apiKeys', href: '/gateway/keys' },
+		],
+	},
+	{
+		// 请求日志覆盖模型、REST 工具与 MCP 调用，审计日志记账户与额度变更；两者都不只属于「用户」。
+		groupKey: 'logs',
+		items: [
+			{ nameKey: 'requestLogs', href: '/gateway/request-logs' },
+			{ nameKey: 'auditLogs', href: '/gateway/audit-logs' },
+		],
+	},
+	{
+		groupKey: 'analytics',
+		items: [
+			{ nameKey: 'modelUsage', href: '/gateway/analytics/models' },
+			{ nameKey: 'providerUsage', href: '/gateway/analytics/providers' },
+			{ nameKey: 'userUsage', href: '/gateway/analytics/users' },
+			{ nameKey: 'reliability', href: '/gateway/analytics/reliability' },
+		],
+	},
+	{
+		groupKey: 'system',
+		items: [
+			{ nameKey: 'config', href: '/gateway/config' },
+			{ nameKey: 'adminApiKeys', href: '/gateway/admin-api-keys' },
+		],
+	},
+];
+
+export const ADMIN_NAV_ROUTES: AdminNavRoute[] = ADMIN_NAV_GROUPS.flatMap((group) => group.items);
+
+/** 最长前缀匹配，避免 `/gateway/analytics/users` 之类的嵌套路径落到更短的条目上。 */
+export function matchAdminNavRoute(pathname: string): AdminNavRoute | null {
+	const rawPath = pathname.split(/[?#]/)[0] || '/';
+	// Old maintenance bookmarks now belong to Configuration.
+	const path = rawPath === '/gateway/maintenance' ? '/gateway/config' : rawPath;
+	let best: AdminNavRoute | null = null;
+	for (const item of ADMIN_NAV_ROUTES) {
+		if (path === item.href || path.startsWith(`${item.href}/`)) {
+			if (!best || item.href.length > best.href.length) {
+				best = item;
+			}
+		}
+	}
+	return best;
+}
+
+export function formatAdminDocumentTitle(page: string | null | undefined, app: string): string {
+	const trimmed = page?.trim() ?? '';
+	return trimmed ? `${trimmed} · ${app}` : app;
+}

@@ -1,0 +1,610 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { prepareGeminiUpstreamFetch, resolveGeminiUpstreamAuth } from './gemini-upstream-url';
+import {
+	listConfiguredCapabilities,
+	parseProviderEndpoints,
+	providerSupportsUpstreamProtocol,
+	resolveUpstreamEndpoint,
+	serializeProviderEndpoints,
+	validateAndNormalizeProviderEndpoints,
+} from './provider-endpoints';
+
+describe('parseProviderEndpoints', () => {
+	it('uses endpoints column when present', () => {
+		const map = parseProviderEndpoints({
+			endpoints: JSON.stringify({
+				openai: { base: 'https://api.openai.com/v1' },
+			}),
+		});
+		assert.equal(map.openai?.base, 'https://api.openai.com/v1');
+	});
+
+	it('returns empty map when endpoints is null', () => {
+		const map = parseProviderEndpoints({ endpoints: null });
+		assert.deepEqual(map, {});
+	});
+
+	it('returns empty map when endpoints is empty object', () => {
+		const map = parseProviderEndpoints({ endpoints: '{}' });
+		assert.deepEqual(map, {});
+	});
+
+	it('uses configured gemini.auth and defaults to query-key', () => {
+		assert.equal(resolveGeminiUpstreamAuth('query-key'), 'query-key');
+		assert.equal(resolveGeminiUpstreamAuth(undefined), 'query-key');
+		const { url, headers } = prepareGeminiUpstreamFetch({
+			baseUrl: 'https://zenmux.ai/api/vertex-ai/v1/publishers/google/models',
+			modelName: 'gemini-2.5-flash',
+			action: 'generateContent',
+			apiKey: 'zm-key',
+			auth: 'bearer',
+		});
+		assert.equal(url.searchParams.has('key'), false);
+		assert.equal(headers.Authorization, 'Bearer zm-key');
+	});
+
+	it('round-trips gemini.auth and ignores auth on other protocols', () => {
+		const map = parseProviderEndpoints({
+			endpoints: {
+				openai: { base: 'https://api.openai.com/v1', auth: 'bearer' },
+				gemini: {
+					base: 'https://zenmux.ai/api/vertex-ai/v1/publishers/google/models',
+					auth: 'bearer',
+				},
+			},
+		});
+		assert.equal(map.openai?.auth, undefined);
+		assert.equal(map.gemini?.auth, 'bearer');
+		const serialized = serializeProviderEndpoints(map);
+		assert.ok(serialized);
+		const again = parseProviderEndpoints({ endpoints: serialized });
+		assert.equal(again.gemini?.auth, 'bearer');
+		assert.equal(again.openai?.auth, undefined);
+	});
+});
+
+describe('resolveUpstreamEndpoint', () => {
+	it('derives chat from openai base', () => {
+		const url = resolveUpstreamEndpoint('openai', 'chat', {
+			openai: { base: 'https://api.openai.com/v1' },
+		});
+		assert.equal(url, 'https://api.openai.com/v1/chat/completions');
+	});
+
+	it('derives responses from openai base', () => {
+		const url = resolveUpstreamEndpoint('openai', 'responses', {
+			openai: { base: 'https://api.x.ai/v1' },
+		});
+		assert.equal(url, 'https://api.x.ai/v1/responses');
+	});
+
+	it('uses responses capability template without appending suffix', () => {
+		const url = resolveUpstreamEndpoint('openai', 'responses', {
+			openai: {
+				endpoints: { responses: 'https://vendor.example/custom/responses' },
+			},
+		});
+		assert.equal(url, 'https://vendor.example/custom/responses');
+	});
+
+	it('derives audio.transcriptions from openai base', () => {
+		const url = resolveUpstreamEndpoint('openai', 'audio.transcriptions', {
+			openai: { base: 'https://api.openai.com/v1' },
+		});
+		assert.equal(url, 'https://api.openai.com/v1/audio/transcriptions');
+	});
+
+	it('uses capability template without appending suffix', () => {
+		const url = resolveUpstreamEndpoint('openai', 'chat', {
+			openai: {
+				endpoints: { chat: 'https://vendor.example/custom/chat' },
+			},
+		});
+		assert.equal(url, 'https://vendor.example/custom/chat');
+	});
+
+	it('fills gemini {model} in legacy per-action template', () => {
+		const url = resolveUpstreamEndpoint(
+			'gemini',
+			'models.generate',
+			{
+				gemini: {
+					endpoints: {
+						generateContent: 'https://x.example/models/{model}:generateContent',
+					},
+				},
+			},
+			{ model: 'gemini-2.0-flash', action: 'generateContent' }
+		);
+		assert.equal(url, 'https://x.example/models/gemini-2.0-flash:generateContent');
+	});
+
+	it('prefers models.generate family template over legacy per-action', () => {
+		const url = resolveUpstreamEndpoint(
+			'gemini',
+			'models.generate',
+			{
+				gemini: {
+					endpoints: {
+						'models.generate': 'https://family.example/models/{model}:{action}',
+						generateContent: 'https://legacy.example/models/{model}:generateContent',
+					},
+				},
+			},
+			{ model: 'gemini-2.0-flash', action: 'streamGenerateContent' }
+		);
+		assert.equal(url, 'https://family.example/models/gemini-2.0-flash:streamGenerateContent');
+	});
+
+	it('derives gemini URL from base when no templates exist', () => {
+		const url = resolveUpstreamEndpoint(
+			'gemini',
+			'models.generate',
+			{ gemini: { base: 'https://generativelanguage.googleapis.com/v1beta/models' } },
+			{ model: 'gemini-2.0-flash', action: 'generateContent' }
+		);
+		assert.equal(
+			url,
+			'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent'
+		);
+	});
+
+	it('derives DashScope HTTP and WebSocket audio endpoints from one API base', () => {
+		const endpoints = {
+			dashscope: {
+				base: 'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1',
+			},
+		};
+		assert.equal(
+			resolveUpstreamEndpoint('dashscope', 'audio.transcriptions.multimodal', endpoints),
+			'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('dashscope', 'audio.transcriptions', endpoints),
+			'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/asr/transcription'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('dashscope', 'audio.transcriptions.tasks', endpoints, {
+				taskId: 'task/1',
+			}),
+			'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/tasks/task%2F1'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('dashscope', 'audio.realtime.inference', endpoints),
+			'wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('dashscope', 'audio.realtime.session', endpoints),
+			'wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('dashscope', 'images.generations.multimodal', endpoints),
+			'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
+		);
+	});
+
+	it('uses the Token Plan multimodal override without deriving filetrans from a DashScope base', () => {
+		const endpoints = {
+			dashscope: {
+				endpoints: {
+					'audio.transcriptions.multimodal':
+						'https://token-plan.maas.qianwenaiapi.com/api/v1/services/aigc/multimodal-generation/generation',
+				},
+			},
+		};
+		assert.equal(
+			resolveUpstreamEndpoint('dashscope', 'audio.transcriptions.multimodal', endpoints),
+			'https://token-plan.maas.qianwenaiapi.com/api/v1/services/aigc/multimodal-generation/generation'
+		);
+		assert.deepEqual(listConfiguredCapabilities(endpoints, 'dashscope'), [
+			'audio.transcriptions.multimodal',
+		]);
+	});
+});
+
+describe('providerSupportsUpstreamProtocol', () => {
+	it('true when only capability endpoints exist', () => {
+		assert.equal(
+			providerSupportsUpstreamProtocol('openai', {
+				endpoints: {
+					openai: { endpoints: { chat: 'https://v.example/chat' } },
+				},
+			}),
+			true
+		);
+	});
+});
+
+describe('validateAndNormalizeProviderEndpoints', () => {
+	it('rejects gemini template without {model}', () => {
+		assert.throws(
+			() =>
+				validateAndNormalizeProviderEndpoints({
+					gemini: {
+						endpoints: {
+							generateContent: 'https://x.example/generate',
+						},
+					},
+				}),
+			/must include \{model\}/
+		);
+	});
+
+	it('accepts legacy gemini per-action keys on write', () => {
+		const map = validateAndNormalizeProviderEndpoints({
+			gemini: {
+				endpoints: {
+					generateContent: 'https://x.example/models/{model}:generateContent',
+				},
+			},
+		});
+		assert.equal(
+			map.gemini?.endpoints?.generateContent,
+			'https://x.example/models/{model}:generateContent'
+		);
+	});
+
+	it('rejects models.generate template without {action}', () => {
+		assert.throws(
+			() =>
+				validateAndNormalizeProviderEndpoints({
+					gemini: {
+						endpoints: {
+							'models.generate': 'https://x.example/models/{model}:generateContent',
+						},
+					},
+				}),
+			/must include \{action\}/
+		);
+	});
+
+	it('accepts gemini.auth bearer and rejects it on other protocols', () => {
+		const map = validateAndNormalizeProviderEndpoints({
+			gemini: {
+				base: 'https://zenmux.ai/api/vertex-ai/v1/publishers/google/models',
+				auth: 'bearer',
+			},
+		});
+		assert.equal(map.gemini?.auth, 'bearer');
+		assert.throws(
+			() =>
+				validateAndNormalizeProviderEndpoints({
+					openai: { base: 'https://api.openai.com/v1', auth: 'bearer' },
+				}),
+			/only supported on gemini/
+		);
+		assert.throws(
+			() =>
+				validateAndNormalizeProviderEndpoints({
+					gemini: {
+						base: 'https://generativelanguage.googleapis.com/v1beta/models',
+						auth: 'header',
+					},
+				}),
+			/must be "query-key" or "bearer"/
+		);
+	});
+
+	it('accepts wss only for DashScope realtime capabilities', () => {
+		const normalized = validateAndNormalizeProviderEndpoints({
+			dashscope: {
+				endpoints: {
+					'audio.realtime.inference': 'wss://workspace.example/api-ws/v1/inference',
+				},
+			},
+		});
+		assert.equal(
+			normalized.dashscope?.endpoints?.['audio.realtime.inference'],
+			'wss://workspace.example/api-ws/v1/inference'
+		);
+		assert.throws(
+			() =>
+				validateAndNormalizeProviderEndpoints({
+					dashscope: {
+						endpoints: { 'audio.speech': 'wss://workspace.example/tts' },
+					},
+				}),
+			/must be http\(s\)/
+		);
+	});
+});
+
+describe('listConfiguredCapabilities', () => {
+	it('returns all protocol capabilities when base is set', () => {
+		assert.deepEqual(
+			listConfiguredCapabilities(
+				{ openai: { base: 'https://api.openai.com/v1' } },
+				'openai'
+			),
+			['chat', 'responses', 'images.generations', 'images.edits', 'audio.transcriptions', 'audio.speech', 'embeddings']
+		);
+	});
+
+	it('returns only explicit overrides when base is absent', () => {
+		assert.deepEqual(
+			listConfiguredCapabilities(
+				{
+					openai: {
+						endpoints: { chat: 'https://vendor.example/chat' },
+					},
+				},
+				'openai'
+			),
+			['chat']
+		);
+	});
+
+	it('returns all capabilities when base is set even with partial overrides', () => {
+		assert.deepEqual(
+			listConfiguredCapabilities(
+				{
+					openai: {
+						base: 'https://api.openai.com/v1',
+						endpoints: { chat: 'https://vendor.example/chat' },
+					},
+				},
+				'openai'
+			),
+			['chat', 'responses', 'images.generations', 'images.edits', 'audio.transcriptions', 'audio.speech', 'embeddings']
+		);
+	});
+
+	it('returns empty array when protocol is not configured', () => {
+		assert.deepEqual(listConfiguredCapabilities({}, 'anthropic'), []);
+	});
+
+	it('maps any gemini override key to models.generate', () => {
+		assert.deepEqual(
+			listConfiguredCapabilities(
+				{
+					gemini: {
+						endpoints: {
+							generateContent: 'https://x.example/models/{model}:generateContent',
+						},
+					},
+				},
+				'gemini'
+			),
+			['models.generate']
+		);
+	});
+
+	it('derives MiniMax speech_to_text from the API base', () => {
+		const endpoints = {
+			minimax: { base: 'https://api.minimaxi.com/v1' },
+		};
+		assert.equal(
+			resolveUpstreamEndpoint('minimax', 'audio.transcriptions', endpoints),
+			'https://api.minimaxi.com/v1/speech_to_text'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('minimax', 'audio.speech', endpoints),
+			'https://api.minimaxi.com/v1/t2a_v2'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('minimax', 'images.generations', endpoints),
+			'https://api.minimaxi.com/v1/image_generation'
+		);
+		assert.deepEqual(listConfiguredCapabilities(endpoints, 'minimax'), [
+			'audio.transcriptions',
+			'audio.speech',
+			'images.generations',
+		]);
+	});
+
+	it('derives ElevenLabs endpoints from the API base and fills voice_id', () => {
+		const endpoints = { elevenlabs: { base: 'https://api.elevenlabs.io/v1' } };
+		assert.equal(
+			resolveUpstreamEndpoint('elevenlabs', 'audio.transcriptions', endpoints),
+			'https://api.elevenlabs.io/v1/speech-to-text'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('elevenlabs', 'audio.speech', endpoints, { voiceId: 'abc 1' }),
+			'https://api.elevenlabs.io/v1/text-to-speech/abc%201'
+		);
+		assert.throws(() => resolveUpstreamEndpoint('elevenlabs', 'audio.speech', endpoints));
+		assert.deepEqual(listConfiguredCapabilities(endpoints, 'elevenlabs'), [
+			'audio.transcriptions',
+			'audio.transcriptions.realtime',
+			'audio.speech',
+			'audio.speech.realtime',
+		]);
+	});
+
+	it('derives ElevenLabs WebSocket endpoints from the API base', () => {
+		const endpoints = { elevenlabs: { base: 'https://api.elevenlabs.io/v1' } };
+		assert.equal(
+			resolveUpstreamEndpoint('elevenlabs', 'audio.transcriptions.realtime', endpoints),
+			'wss://api.elevenlabs.io/v1/speech-to-text/realtime'
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('elevenlabs', 'audio.speech.realtime', endpoints, { voiceId: 'abc 1' }),
+			'wss://api.elevenlabs.io/v1/text-to-speech/abc%201/stream-input'
+		);
+		assert.throws(() => resolveUpstreamEndpoint('elevenlabs', 'audio.speech.realtime', endpoints));
+	});
+
+	it('validates explicit ElevenLabs realtime templates', () => {
+		assert.throws(() =>
+			validateAndNormalizeProviderEndpoints({
+				elevenlabs: {
+					endpoints: {
+						'audio.speech.realtime': 'wss://api.elevenlabs.io/v1/text-to-speech/x/stream-input',
+					},
+				},
+			})
+		);
+		assert.throws(() =>
+			validateAndNormalizeProviderEndpoints({
+				elevenlabs: {
+					endpoints: { 'audio.transcriptions.realtime': 'https://api.elevenlabs.io/v1/speech-to-text/realtime' },
+				},
+			})
+		);
+		const ok = validateAndNormalizeProviderEndpoints({
+			elevenlabs: {
+				endpoints: {
+					'audio.speech.realtime': 'wss://api.eu.residency.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input',
+					'audio.transcriptions.realtime': 'wss://api.eu.residency.elevenlabs.io/v1/speech-to-text/realtime',
+				},
+			},
+		});
+		assert.equal(
+			resolveUpstreamEndpoint('elevenlabs', 'audio.speech.realtime', ok, { voiceId: 'v1' }),
+			'wss://api.eu.residency.elevenlabs.io/v1/text-to-speech/v1/stream-input'
+		);
+	});
+
+	it('requires {voice_id} in an explicit ElevenLabs speech template', () => {
+		assert.throws(() =>
+			validateAndNormalizeProviderEndpoints({
+				elevenlabs: { endpoints: { 'audio.speech': 'https://api.eu.residency.elevenlabs.io/v1/text-to-speech' } },
+			})
+		);
+		const ok = validateAndNormalizeProviderEndpoints({
+			elevenlabs: {
+				endpoints: {
+					'audio.speech': 'https://api.eu.residency.elevenlabs.io/v1/text-to-speech/{voice_id}',
+				},
+			},
+		});
+		assert.equal(
+			resolveUpstreamEndpoint('elevenlabs', 'audio.speech', ok, { voiceId: 'v1' }),
+			'https://api.eu.residency.elevenlabs.io/v1/text-to-speech/v1'
+		);
+	});
+
+	it('derives Volcengine images/generations from the Ark API base', () => {
+		const endpoints = {
+			volcengine: { base: 'https://ark.cn-beijing.volces.com/api/v3' },
+		};
+		assert.equal(
+			resolveUpstreamEndpoint('volcengine', 'images.generations', endpoints),
+			'https://ark.cn-beijing.volces.com/api/v3/images/generations'
+		);
+		assert.deepEqual(listConfiguredCapabilities(endpoints, 'volcengine'), ['images.generations']);
+	});
+
+	it('prefers an explicit Volcengine generations URL over the derived path', () => {
+		assert.equal(
+			resolveUpstreamEndpoint('volcengine', 'images.generations', {
+				volcengine: {
+					base: 'https://ark.cn-beijing.volces.com/api/v3',
+					endpoints: {
+						'images.generations': 'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations',
+					},
+				},
+			}),
+			'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations'
+		);
+	});
+
+	it('prefers an explicit MiniMax transcription URL over the derived path', () => {
+		assert.equal(
+			resolveUpstreamEndpoint('minimax', 'audio.transcriptions', {
+				minimax: {
+					base: 'https://api.minimaxi.com/v1',
+					endpoints: {
+						'audio.transcriptions': 'https://api.minimax.io/v1/speech_to_text',
+					},
+				},
+			}),
+			'https://api.minimax.io/v1/speech_to_text'
+		);
+	});
+
+	it('lists every DashScope capability when its API base is configured', () => {
+		assert.deepEqual(
+			listConfiguredCapabilities(
+				{ dashscope: { base: 'https://dashscope.aliyuncs.com/api/v1' } },
+				'dashscope'
+			),
+			[
+				'audio.transcriptions',
+				'audio.transcriptions.multimodal',
+				'audio.transcriptions.tasks',
+				'audio.speech',
+				'audio.speech.multimodal',
+				'audio.realtime.inference',
+				'audio.realtime.session',
+				'audio.hotwords',
+				'audio.voices',
+				'images.generations.multimodal',
+			]
+		);
+	});
+});
+
+describe('embeddings capabilities', () => {
+	it('derives OpenAI embeddings URL from base and honors overrides', () => {
+		assert.equal(
+			resolveUpstreamEndpoint('openai', 'embeddings', { openai: { base: 'https://api.openai.com/v1' } }),
+			'https://api.openai.com/v1/embeddings',
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('openai', 'embeddings', {
+				openai: { endpoints: { embeddings: 'https://x.example/emb' } },
+			}),
+			'https://x.example/emb',
+		);
+		assert.ok(
+			listConfiguredCapabilities({ openai: { base: 'https://api.openai.com/v1' } }, 'openai').includes('embeddings'),
+		);
+	});
+
+	it('derives Gemini embed URL per action and rejects missing action', () => {
+		const map = { gemini: { base: 'https://generativelanguage.googleapis.com/v1beta/models' } };
+		assert.equal(
+			resolveUpstreamEndpoint('gemini', 'models.embed', map, {
+				model: 'gemini-embedding-001',
+				action: 'embedContent',
+			}),
+			'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent',
+		);
+		assert.equal(
+			resolveUpstreamEndpoint('gemini', 'models.embed', map, {
+				model: 'gemini-embedding-001',
+				action: 'batchEmbedContents',
+			}),
+			'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents',
+		);
+		assert.throws(
+			() => resolveUpstreamEndpoint('gemini', 'models.embed', map, { model: 'm' }),
+			/requires action/,
+		);
+		assert.equal(
+			resolveUpstreamEndpoint(
+				'gemini',
+				'models.embed',
+				{ gemini: { endpoints: { 'models.embed': 'https://e.example/models/{model}:{action}' } } },
+				{ model: 'm', action: 'embedContent' },
+			),
+			'https://e.example/models/m:embedContent',
+		);
+	});
+
+	it('lists models.embed for base and for template-only gemini config', () => {
+		assert.deepEqual(
+			listConfiguredCapabilities({ gemini: { base: 'https://x.example/v1beta/models' } }, 'gemini'),
+			['models.generate', 'models.embed'],
+		);
+		assert.deepEqual(
+			listConfiguredCapabilities(
+				{ gemini: { endpoints: { 'models.embed': 'https://e.example/{model}:{action}' } } },
+				'gemini',
+			),
+			['models.embed'],
+		);
+	});
+
+	it('validates gemini embed template placeholders', () => {
+		assert.throws(
+			() =>
+				validateAndNormalizeProviderEndpoints({
+					gemini: { endpoints: { 'models.embed': 'https://e.example/{model}:embedContent' } },
+				}),
+			/\{action\}/,
+		);
+	});
+});

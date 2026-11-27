@@ -1,0 +1,65 @@
+'use client';
+
+/**
+ * GitHub / docs links for admin chrome (top bar, mobile navigation and login).
+ */
+import { BookOpenIcon } from '@heroicons/react/24/outline';
+import { useTranslations } from 'next-intl';
+import type { SimpleIcon } from 'simple-icons';
+import { siGithub } from 'simple-icons';
+import {
+	OCTAFUSE_GITHUB_DOCS_INDEX,
+	OCTAFUSE_GITHUB_REPO_WEB,
+} from '@/lib/brand';
+
+/** GitHub mark: use currentColor so it follows link text in every surface (brand hex is near-black). */
+function GithubGlyph({ icon, className }: { icon: SimpleIcon; className?: string }) {
+	const tBrand = useTranslations('brand');
+	return (
+		<svg
+			role="img"
+			viewBox="0 0 24 24"
+			xmlns="http://www.w3.org/2000/svg"
+			className={className}
+			aria-hidden
+		>
+			<title>{tBrand('github')}</title>
+			<path fill="currentColor" d={icon.path} />
+		</svg>
+	);
+}
+
+type Variant = 'sidebar' | 'header' | 'login';
+
+const linkClass: Record<Variant, string> = {
+	header: 'inline-flex h-8 items-center gap-2 rounded-lg px-2 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-950',
+	sidebar: 'inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-950 transition-colors',
+	login: 'inline-flex h-10 items-center gap-2 rounded-lg px-3 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400',
+};
+
+export default function BrandExternalLinks({ variant }: { variant: Variant }) {
+	const tBrand = useTranslations('brand');
+	const cls = linkClass[variant];
+	return (
+		<div className={`flex flex-wrap items-center gap-x-4 gap-y-2 ${variant === 'login' ? 'justify-center' : 'justify-start'}`}>
+			<a
+				href={OCTAFUSE_GITHUB_DOCS_INDEX}
+				target="_blank"
+				rel="noopener noreferrer"
+				className={cls}
+			>
+				<BookOpenIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+				{tBrand('docs')}
+			</a>
+			<a
+				href={OCTAFUSE_GITHUB_REPO_WEB}
+				target="_blank"
+				rel="noopener noreferrer"
+				className={cls}
+			>
+				<GithubGlyph icon={siGithub} className="h-3.5 w-3.5 shrink-0" />
+				{tBrand('github')}
+			</a>
+		</div>
+	);
+}

@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 能力门户 · 平台架构与使用流程</title>
+<style>
+  :root{
+    --ink:#1A1A1A;
+    --sub:#5A5A5A;
+    --faint:#8C8C8C;
+    --line:#CFD2D6;
+    --brand:#1F4E79;
+    --band:#F6F7F9;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:#FFFFFF;color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1360px;margin:0 auto;padding:54px 40px 84px}
+  header.top{margin-bottom:30px;padding-bottom:22px;border-bottom:1px solid var(--line)}
+  .kicker{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  h1{font-size:24px;line-height:1.4;margin:10px 0 12px;font-weight:600;color:#111}
+  .lede{font-size:13px;line-height:1.8;color:var(--sub);max-width:800px;margin:0}
+  .lede code{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12px;
+    background:#F2F3F5;padding:1px 5px;border-radius:2px;color:#333;
+  }
+
+  .fig{
+    background:#FFFFFF;border:1px solid var(--line);border-radius:3px;
+    padding:24px 24px 20px;margin-bottom:22px;box-shadow:none;
+  }
+  .fig-head{display:flex;align-items:baseline;gap:10px;margin-bottom:4px;flex-wrap:wrap}
+  .fig-no{
+    font-family:"SF Mono",Menlo,Consolas,monospace;
+    font-size:11.5px;font-weight:600;letter-spacing:.08em;color:var(--brand);
+  }
+  .fig h2{font-size:15.5px;margin:0;font-weight:600;color:#111}
+  .fig-desc{font-size:12px;color:var(--sub);line-height:1.75;margin:6px 0 18px}
+  .fig-desc b{color:#333;font-weight:600}
+  .fig-desc code{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:11px;
+    background:#F2F3F5;padding:0 4px;border-radius:2px;color:#333;
+  }
+  svg{display:block;width:100%;height:auto}
+
+  /* ---- SVG ---- */
+  .bx{fill:#fff;stroke:#CFD2D6;stroke-width:1}
+  .tt{font-size:13.5px;font-weight:600;fill:#1A1A1A}
+  .st{font-size:11.5px;fill:#5A5A5A}
+  .mt{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:10px;fill:#5A5A5A}
+  .lb{font-size:9.5px;fill:#9A9A9A;font-weight:600;letter-spacing:.12em}
+  .tag{font-size:10.5px;fill:#8C8C8C}
+  .arw{fill:none;stroke:#A8A8A8;stroke-width:1.4}
+  .arw-d{fill:none;stroke:#A8A8A8;stroke-width:1.3;stroke-dasharray:4 4}
+  .arw-r{fill:none;stroke:#A8A8A8;stroke-width:1.4}
+  .lbl{font-size:10px;fill:#8C8C8C}
+
+  .notes{
+    margin:18px 0 0;padding:14px 0 0;list-style:none;
+    border-top:1px solid #EEEEEE;
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:8px 36px;
+  }
+  .notes li{font-size:11.5px;line-height:1.72;color:var(--sub);padding-left:14px;position:relative}
+  .notes li::before{
+    content:"";position:absolute;left:0;top:7px;width:4px;height:4px;background:#BFBFBF;
+  }
+  .notes li b{color:#333;font-weight:600}
+  .notes li code{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:10.5px;
+    background:#F2F3F5;padding:0 4px;border-radius:2px;color:#333;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">AI 能力门户</div>
+  <h1>平台架构与使用流程</h1>
+  <p class="lede">
+    面向学校的 AI 模型统一门户：师生用学校账号登录即可自助领取密钥、按需使用多家云厂商的模型；
+    管理员统一配置可用模型与额度，全校用量实时可查。学校现有账号体系无需改造。
+  </p>
+</header>
+
+<!-- ============================================================ 01 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">01</span><h2>平台整体架构</h2></div>
+  <p class="fig-desc">自下而上分为五层。学校完成一次身份对接后，其余能力即可使用。</p>
+
+  <svg viewBox="0 0 1320 862" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="平台整体架构">
+    <!-- 层背景带 -->
+    <g>
+      <rect x="40" y="52" width="1240" height="112" rx="2" fill="#F6F7F9"/>
+      <rect x="40" y="192" width="1240" height="86" rx="2" fill="#F6F7F9"/>
+      <rect x="40" y="306" width="1240" height="230" rx="2" fill="#F6F7F9"/>
+      <rect x="40" y="564" width="1240" height="120" rx="2" fill="#F6F7F9"/>
+      <rect x="40" y="712" width="1240" height="108" rx="2" fill="#F6F7F9"/>
+    </g>
+
+    <!-- 层标签 -->
+    <text class="lb" x="54" y="112" fill="#8C8C8C">使用者</text>
+    <text class="lb" x="54" y="240" fill="#8C8C8C">入口</text>
+    <text class="lb" x="54" y="428" fill="#8C8C8C">平台能力</text>
+    <text class="lb" x="54" y="628" fill="#8C8C8C">模型</text>
+    <text class="lb" x="54" y="770" fill="#8C8C8C">数据</text>
+
+    <!-- 使用者 -->
+    <g>
+      <rect class="bx" x="140" y="66" width="340" height="94" rx="2"/>
+      <text class="tt" x="160" y="94">学生</text>
+      <text class="st" x="160" y="118">网页端直接使用 · 自己的工具接入</text>
+      <text class="tag" x="160" y="140">用学校账号登录，无需额外注册</text>
+
+      <rect class="bx" x="520" y="66" width="340" height="94" rx="2"/>
+      <text class="tt" x="540" y="94">教师</text>
+      <text class="st" x="540" y="118">备课 · 出题 · 批改 · 教研辅助</text>
+      <text class="tag" x="540" y="140">与学生共用同一套账号与额度体系</text>
+
+      <rect class="bx" x="900" y="66" width="340" height="94" rx="2"/>
+      <text class="tt" x="920" y="94">管理员</text>
+      <text class="st" x="920" y="118">配置可用模型 · 分配额度 · 查看用量</text>
+      <text class="tag" x="920" y="140">按角色开放权限，操作全程留痕</text>
+    </g>
+
+    <!-- 统一入口 -->
+    <rect x="140" y="192" width="1100" height="86" rx="2" fill="#EDF1F6" stroke="#A8B8CC" stroke-width="1.2"/>
+    <text class="tt" x="160" y="220" fill="#1F4E79">AI 能力门户</text>
+    <text class="st" x="160" y="243" fill="#1F4E79">一个入口，三种角色各有专属界面：学生用模型、管理员配模型、审计看记录</text>
+    <text class="tag" x="160" y="264" fill="#1F4E79">对外只暴露一个统一地址，学校无需为不同角色准备多套系统</text>
+
+    <!-- 平台能力 6 卡 -->
+    <g>
+      <rect class="bx" x="140" y="310" width="340" height="96" rx="2"/>
+      <text class="tt" x="160" y="338">统一身份</text>
+      <text class="st" x="160" y="362">对接学校现有账号体系</text>
+      <text class="tag" x="160" y="384">不新建密码，登录即用；现有系统无需改造</text>
+
+      <rect class="bx" x="520" y="310" width="340" height="96" rx="2"/>
+      <text class="tt" x="540" y="338">密钥管理</text>
+      <text class="st" x="540" y="362">自助领取、一键复制</text>
+      <text class="tag" x="540" y="384">丢失可随时吊销重发，历史密钥立即失效</text>
+
+      <rect class="bx" x="900" y="310" width="340" height="96" rx="2"/>
+      <text class="tt" x="920" y="338">额度与计费</text>
+      <text class="st" x="920" y="362">按人、按周期分配额度</text>
+      <text class="tag" x="920" y="384">余额与消耗实时可见，用尽前自动提醒</text>
+
+      <rect class="bx" x="140" y="424" width="340" height="96" rx="2"/>
+      <text class="tt" x="160" y="452">模型路由</text>
+      <text class="st" x="160" y="476">同一模型可接多家供应商</text>
+      <text class="tag" x="160" y="498">主线路繁忙或波动时自动切换，用户无感知</text>
+
+      <rect class="bx" x="520" y="424" width="340" height="96" rx="2"/>
+      <text class="tt" x="540" y="452">用量分析</text>
+      <text class="st" x="540" y="476">按人 / 按模型 / 按时间统计</text>
+      <text class="tag" x="540" y="498">支持导出对账，便于经费核算</text>
+
+      <rect class="bx" x="900" y="424" width="340" height="96" rx="2"/>
+      <text class="tt" x="920" y="452">安全审计</text>
+      <text class="st" x="920" y="476">每次调用留痕，内容可选留存</text>
+      <text class="tag" x="920" y="498">可按需开启对话内容留存，供事后核查</text>
+    </g>
+
+    <!-- 模型服务 -->
+    <g>
+      <rect x="140" y="568" width="340" height="100" rx="2" fill="#FCFCFD" stroke="#CFD2D6" stroke-width="1.4"/>
+      <text class="tt" x="160" y="596" fill="#333333">腾讯云</text>
+      <text class="st" x="160" y="620" fill="#5A5A5A">通用对话 · 代码 · 图像 · 向量</text>
+      <text class="tag" x="160" y="642" fill="#5A5A5A">模型覆盖最全，可作为默认线路</text>
+
+      <rect x="520" y="568" width="340" height="100" rx="2" fill="#FCFCFD" stroke="#CFD2D6" stroke-width="1.4"/>
+      <text class="tt" x="540" y="596" fill="#333333">阿里云</text>
+      <text class="st" x="540" y="620" fill="#5A5A5A">通义千问系列 · 文本与向量</text>
+      <text class="tag" x="540" y="642" fill="#5A5A5A">同一模型可与腾讯云互为备份</text>
+
+      <rect x="900" y="568" width="340" height="100" rx="2" fill="#FCFCFD" stroke="#CFD2D6" stroke-width="1.4"/>
+      <text class="tt" x="920" y="596" fill="#333333">火山引擎</text>
+      <text class="st" x="920" y="620" fill="#5A5A5A">豆包系列 · 文本与图像</text>
+      <text class="tag" x="920" y="642" fill="#5A5A5A">统一协议接入，切换成本为零</text>
+    </g>
+
+    <!-- 数据留存 -->
+    <g>
+      <rect class="bx" x="140" y="716" width="540" height="86" rx="2"/>
+      <text class="tt" x="160" y="744">调用记录与用量</text>
+      <text class="st" x="160" y="768">谁在什么时候用了哪个模型、花了多少</text>
+      <text class="tag" x="160" y="788">数据保存在学校自己的环境中</text>
+
+      <rect class="bx" x="700" y="716" width="540" height="86" rx="2"/>
+      <text class="tt" x="720" y="744">平台配置</text>
+      <text class="st" x="720" y="768">可用模型、额度规则、角色权限</text>
+      <text class="tag" x="720" y="788">随时可调整，改完立即生效，无需停机</text>
+    </g>
+  </svg>
+
+  <ul class="notes">
+    <li><b>身份对接。</b>学校提供现有身份体系的对接参数，开户、发放密钥、分配额度由平台自动完成。</li>
+    <li><b>多供应商。</b>同一模型可同时接入多家供应商并按优先级分流，某家服务波动时自动切换。</li>
+    <li><b>数据留存。</b>调用记录与用量保存在学校自有环境中，不经过第三方平台。</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 02 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">02</span><h2>学生 / 教师第一次使用</h2></div>
+  <p class="fig-desc">首次使用共四步。开户与发放密钥自动完成，无需管理员逐个处理。</p>
+
+  <svg viewBox="0 0 1440 356" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="学生使用流程">
+    <defs>
+      <marker id="a2" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#A8A8A8" stroke-width="1.7"/>
+      </marker>
+    </defs>
+
+    <g transform="translate(0,-56)">
+
+    <path d="M360,178 L408,178" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a2)"/>
+    <path d="M705,178 L753,178" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a2)"/>
+    <path d="M1050,178 L1098,178" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a2)"/>
+
+    <g>
+      <rect class="bx" x="70" y="108" width="290" height="170" rx="2"/>
+      <rect x="87" y="125" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="98" y="140.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">1</text>
+      <text class="tt" x="120" y="141">用学校账号登录</text>
+      <text class="st" x="90" y="180">对接学校统一身份</text>
+      <text class="st" x="90" y="204">不用记新的密码</text>
+      <text class="tag" x="90" y="236">原有账号密码直接可用</text>
+      <text class="tag" x="90" y="256">无需申请新账号</text>
+
+      <rect class="bx" x="415" y="108" width="290" height="170" rx="2"/>
+      <rect x="432" y="125" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="443" y="140.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">2</text>
+      <text class="tt" x="465" y="141">账号自动开通</text>
+      <text class="st" x="435" y="180">首次登录即完成开户</text>
+      <text class="st" x="435" y="204">按学校策略分配额度</text>
+      <text class="tag" x="435" y="236">默认额度与周期可统一设定</text>
+      <text class="tag" x="435" y="256">后续按需单独调整</text>
+
+      <rect class="bx" x="760" y="108" width="290" height="170" rx="2"/>
+      <rect x="777" y="125" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="788" y="140.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">3</text>
+      <text class="tt" x="810" y="141">领取 API Key</text>
+      <text class="st" x="780" y="180">一键生成、随时复制</text>
+      <text class="st" x="780" y="204">只在本人账号下可见</text>
+      <text class="tag" x="780" y="236">丢失可随时吊销重发</text>
+      <text class="tag" x="780" y="256">一个 Key 通用于所有模型</text>
+
+      <rect class="bx" x="1105" y="108" width="290" height="170" rx="2"/>
+      <rect x="1122" y="125" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="1133" y="140.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">4</text>
+      <text class="tt" x="1155" y="141">选择模型开始使用</text>
+      <text class="st" x="1125" y="180">网页调试台直接试</text>
+      <text class="st" x="1125" y="204">或填到自己熟悉的工具里</text>
+      <text class="tag" x="1125" y="236">支持主流开发工具与插件</text>
+      <text class="tag" x="1125" y="256">无需安装专用客户端</text>
+    </g>
+
+    <rect x="70" y="318" width="1325" height="72" rx="2" fill="#F6F7F9" stroke="#CFD2D6" stroke-width="1.2"/>
+    <text class="st" x="92" y="344" fill="#1F4E79" font-weight="600">开户与发放密钥自动完成</text>
+    <text class="tag" x="92" y="368" fill="#5A5A5A">额度上限与可用模型范围由学校统一策略控制，也可按管理需要开启人工审核</text>
+      </g>
+  </svg>
+
+  <ul class="notes">
+    <li><b>账号沿用。</b>师生使用学校现有账号，不新增一套密码。</li>
+    <li><b>即时开通。</b>首次登录即完成开户，无需等待人工处理。</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 03 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">03</span><h2>一次模型调用的过程</h2></div>
+  <p class="fig-desc">一次调用经过五个处理环节，调用方只发起一次请求。</p>
+
+  <svg viewBox="0 0 1440 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="一次模型调用">
+    <defs>
+      <marker id="a3" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#A8A8A8" stroke-width="1.7"/>
+      </marker>
+    </defs>
+
+    <g transform="translate(0,-50)">
+
+    <path d="M300,150 L338,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M570,150 L608,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M840,150 L878,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M1110,150 L1148,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a3)"/>
+
+    <g>
+      <rect class="bx" x="60" y="86" width="240" height="128" rx="2"/>
+      <rect x="77" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="88" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">1</text>
+      <text class="tt" x="110" y="119">携带密钥发起请求</text>
+      <text class="st" x="80" y="154">网页端或自有工具</text>
+      <text class="st" x="80" y="176">一个 Key 通用</text>
+      <text class="tag" x="80" y="198">支持流式返回</text>
+
+      <rect class="bx" x="330" y="86" width="240" height="128" rx="2"/>
+      <rect x="347" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="358" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">2</text>
+      <text class="tt" x="380" y="119">校验身份与额度</text>
+      <text class="st" x="350" y="154">核对账号状态</text>
+      <text class="st" x="350" y="176">确认剩余额度</text>
+      <text class="tag" x="350" y="198">不足时立即提示</text>
+
+      <rect class="bx" x="600" y="86" width="240" height="128" rx="2"/>
+      <rect x="617" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="628" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">3</text>
+      <text class="tt" x="650" y="119">选择可用线路</text>
+      <text class="st" x="620" y="154">同一模型多个来源</text>
+      <text class="st" x="620" y="176">按优先级自动选</text>
+      <text class="tag" x="620" y="198">异常线路自动跳过</text>
+
+      <rect class="bx" x="870" y="86" width="240" height="128" rx="2"/>
+      <rect x="887" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="898" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">4</text>
+      <text class="tt" x="920" y="119">调用模型服务</text>
+      <text class="st" x="890" y="154">统一协议转发</text>
+      <text class="st" x="890" y="176">无需为每家写适配</text>
+      <text class="tag" x="890" y="198">换供应商不改代码</text>
+
+      <rect class="bx" x="1140" y="86" width="240" height="128" rx="2"/>
+      <rect x="1157" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="1168" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">5</text>
+      <text class="tt" x="1190" y="119">返回结果并记账</text>
+      <text class="st" x="1160" y="154">结果流式返回</text>
+      <text class="st" x="1160" y="176">用量同步计入</text>
+      <text class="tag" x="1160" y="198">可随时查明细</text>
+    </g>
+
+    <text class="lb" x="60" y="264" fill="#8C8C8C">三条保障</text>
+
+    <g>
+      <rect x="60" y="280" width="420" height="86" rx="2" fill="#FFFFFF" stroke="#CFD2D6" stroke-width="1.2"/>
+      <text class="st" x="80" y="308" font-weight="600">线路故障自动切换</text>
+      <text class="tag" x="80" y="332">某家供应商波动时，自动换到备份线路</text>
+      <text class="tag" x="80" y="352">用户侧只看到正常返回</text>
+
+      <rect x="510" y="280" width="420" height="86" rx="2" fill="#FFFFFF" stroke="#CFD2D6" stroke-width="1.2"/>
+      <text class="st" x="530" y="308" font-weight="600">额度与限流分级</text>
+      <text class="tag" x="530" y="332">可按人、按角色设定上限，防止个别滥用</text>
+      <text class="tag" x="530" y="352">超额即时拦截并提示</text>
+
+      <rect x="960" y="280" width="420" height="86" rx="2" fill="#FFFFFF" stroke="#CFD2D6" stroke-width="1.2"/>
+      <text class="st" x="980" y="308" font-weight="600">每次调用可追溯</text>
+      <text class="tag" x="980" y="332">谁、何时、用了哪个模型、消耗多少</text>
+      <text class="tag" x="980" y="352">内容留存可按需开启</text>
+    </g>
+      </g>
+  </svg>
+
+  <ul class="notes">
+    <li><b>对调用方透明。</b>更换模型或供应商均在平台侧完成，调用代码无需改动。</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 04 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">04</span><h2>管理员接入一家模型服务</h2></div>
+  <p class="fig-desc">管理员在界面上完成五步配置即可接入一家模型服务，无需改动配置文件或重启。</p>
+
+  <svg viewBox="0 0 1440 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="管理员接入流程">
+    <defs>
+      <marker id="a4" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#A8A8A8" stroke-width="1.7"/>
+      </marker>
+    </defs>
+
+    <g transform="translate(0,-50)">
+
+    <path d="M300,150 L338,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a4)"/>
+    <path d="M570,150 L608,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a4)"/>
+    <path d="M840,150 L878,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a4)"/>
+    <path d="M1110,150 L1148,150" fill="none" stroke="#A8A8A8" stroke-width="2" marker-end="url(#a4)"/>
+
+    <g>
+      <rect class="bx" x="60" y="86" width="240" height="128" rx="2"/>
+      <rect x="77" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="88" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">1</text>
+      <text class="tt" x="110" y="119">登录管理后台</text>
+      <text class="st" x="80" y="154">与门户同一套账号</text>
+      <text class="st" x="80" y="176">按角色开放权限</text>
+      <text class="tag" x="80" y="198">普通用户看不到后台</text>
+
+      <rect class="bx" x="330" y="86" width="240" height="128" rx="2"/>
+      <rect x="347" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="358" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">2</text>
+      <text class="tt" x="380" y="119">选择厂商并录入密钥</text>
+      <text class="st" x="350" y="154">腾讯云 / 阿里云 / 火山</text>
+      <text class="st" x="350" y="176">粘贴厂商提供的 Key</text>
+      <text class="tag" x="350" y="198">可先检测是否可用</text>
+
+      <rect class="bx" x="600" y="86" width="240" height="128" rx="2"/>
+      <rect x="617" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="628" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">3</text>
+      <text class="tt" x="650" y="119">勾选要开放的模型</text>
+      <text class="st" x="620" y="154">按厂商返回的清单选</text>
+      <text class="st" x="620" y="176">默认勾选主流模型</text>
+      <text class="tag" x="620" y="198">价格与参数自动带出</text>
+
+      <rect class="bx" x="870" y="86" width="240" height="128" rx="2"/>
+      <rect x="887" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="898" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">4</text>
+      <text class="tt" x="920" y="119">一键完成接入</text>
+      <text class="st" x="890" y="154">同步模型与路由</text>
+      <text class="st" x="890" y="176">立即对师生可见</text>
+      <text class="tag" x="890" y="198">失败项逐条提示原因</text>
+
+      <rect class="bx" x="1140" y="86" width="240" height="128" rx="2"/>
+      <rect x="1157" y="103" width="22" height="22" rx="2" fill="#1F4E79"/>
+      <text x="1168" y="118.5" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">5</text>
+      <text class="tt" x="1190" y="119">配置额度与可见范围</text>
+      <text class="st" x="1160" y="154">哪些角色能用哪些模型</text>
+      <text class="st" x="1160" y="176">默认额度与周期</text>
+      <text class="tag" x="1160" y="198">改完即时生效</text>
+    </g>
+
+    <text class="lb" x="60" y="264" fill="#8C8C8C">安全承诺</text>
+
+    <g>
+      <rect x="60" y="280" width="420" height="86" rx="2" fill="#EDF1F6" stroke="#B8C6D6" stroke-width="1.4"/>
+      <text class="st" x="80" y="308" font-weight="700" fill="#1F4E79">厂商密钥只在服务端保存</text>
+      <text class="tag" x="80" y="332" fill="#5A5A5A">不写入配置文件、镜像或日志</text>
+      <text class="tag" x="80" y="352" fill="#5A5A5A">页面上只显示尾号，不展示完整值</text>
+
+      <rect x="510" y="280" width="420" height="86" rx="2" fill="#FFFFFF" stroke="#CFD2D6" stroke-width="1.2"/>
+      <text class="st" x="530" y="308" font-weight="600">后续调整不用停机</text>
+      <text class="tag" x="530" y="332">模型上下架、价格、额度都能在界面上改</text>
+      <text class="tag" x="530" y="352">保存即生效，不影响正在进行的调用</text>
+
+      <rect x="960" y="280" width="420" height="86" rx="2" fill="#FFFFFF" stroke="#CFD2D6" stroke-width="1.2"/>
+      <text class="st" x="980" y="308" font-weight="600">多家厂商可并行接入</text>
+      <text class="tag" x="980" y="332">每家独立配置，互不影响</text>
+      <text class="tag" x="980" y="352">同一模型可由多家同时提供</text>
+    </g>
+      </g>
+  </svg>
+
+  <ul class="notes">
+    <li><b>无需研发介入。</b>接入、上架、调价均在管理界面完成，学校 IT 可自行维护。</li>
+    <li><b>可反复调整。</b>模型清单与额度随时可改，已上架的模型不会被误删。</li>
+  </ul>
+</section>
+
+</div>
+</body>
+</html>

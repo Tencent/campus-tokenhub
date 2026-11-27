@@ -1,0 +1,41 @@
+import type { GatewayDatabaseClient } from './database-client';
+import type { GatewayRepositories } from './repositories-types';
+import { createMySqlAdminAnalyticsRepository } from '../db/mysql/admin-analytics.impl';
+import { createMySqlApiKeysRepository } from '../db/mysql/api-keys.impl';
+import { createMySqlModelRoutesRepository } from '../db/mysql/model-routes.impl';
+import { createMySqlModelRoutingRepository } from '../db/mysql/model-routing.impl';
+import { createMySqlModelsRepository } from '../db/mysql/models.impl';
+import { createMySqlProvidersRepository } from '../db/mysql/providers.impl';
+import { createMySqlRequestLogsRepository } from '../db/mysql/request-logs.impl';
+import { createMySqlSystemConfigRepository } from '../db/mysql/system-config.impl';
+import { createMySqlRoutePoolStickyBindingsRepository } from '../db/mysql/route-pool-sticky-bindings.impl';
+import { createMySqlUserAuditLogsRepository } from '../db/mysql/user-audit-logs.impl';
+import { createMySqlUsersRepository } from '../db/mysql/users.impl';
+import { createMySqlAdminAccessRepository } from '../db/mysql/admin-access.impl';
+import { createMySqlMcpServersRepository } from '../db/mysql/mcp-servers.impl';
+import { createMySqlOAuthAccessTokensRepository } from '../db/mysql/oauth-access-tokens.impl';
+import { createMySqlOAuthServerRepository } from '../db/mysql/oauth-server.impl';
+
+export function createMySqlRepositories(client: GatewayDatabaseClient): GatewayRepositories {
+	if (client.driver !== 'mysql') {
+		throw new Error('createMySqlRepositories: expected MySQL client');
+	}
+	return {
+		client,
+		users: createMySqlUsersRepository(client),
+		apiKeys: createMySqlApiKeysRepository(client),
+		requestLogs: createMySqlRequestLogsRepository(client),
+		providers: createMySqlProvidersRepository(client),
+		models: createMySqlModelsRepository(client),
+		routes: createMySqlModelRoutesRepository(client),
+		systemConfig: createMySqlSystemConfigRepository(client),
+		analytics: createMySqlAdminAnalyticsRepository(client),
+		modelRouting: createMySqlModelRoutingRepository(client),
+		userAuditLogs: createMySqlUserAuditLogsRepository(client),
+		routePoolSticky: createMySqlRoutePoolStickyBindingsRepository(client),
+		adminAccess: createMySqlAdminAccessRepository(client),
+		mcpServers: createMySqlMcpServersRepository(client),
+		oauthAccessTokens: createMySqlOAuthAccessTokensRepository(client),
+		oauthServer: createMySqlOAuthServerRepository(client),
+	};
+}

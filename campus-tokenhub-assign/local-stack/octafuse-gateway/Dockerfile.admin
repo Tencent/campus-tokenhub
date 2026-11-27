@@ -1,0 +1,141 @@
+# Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+# This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+
+# gateway-admin — 标准 Next 生产构建 + Vite UI + Node 入口（同镜像、同 8789 端口）
+# Build: docker build -f Dockerfile.admin -t octafuse-admin:latest .
+# Base: Node 22 on Alpine 3.22, pinned digest for reproducible builds / scanner baselines.
+# Bump digest: docker buildx imagetools inspect docker.io/library/node:22-alpine3.22
+ARG NODE_IMAGE=node:22-alpine3.22@sha256:b77017c37f430e4466ff497058948a2f16e8b59779600d53711eeb7b999b0f4e
+
+# builder 固定在构建机本机架构（--platform=$BUILDPLATFORM）：`next build` 产物（.next/standalone、
+# node-server.mjs）是纯 JS，与目标架构无关。多架构发布时只原生构建一次，避免 linux/arm64 走 QEMU
+# （实测 `next build` 约 450s vs 原生约 55s）。runner 阶段仍按目标平台各自拉基础镜像并 COPY。
+# 约束：runner 只能 COPY 平台无关文件。standalone 会把 sharp 的原生 `.node` 一并 trace 进来
+# （Turbopack 下 outputFileTracingExcludes 对 next-server 不生效），下面构建后显式删除，
+# 并用守卫保证 standalone 里没有任何原生二进制，否则会把构建机架构的文件带进另一个架构的镜像。
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
+
+WORKDIR /app
+
+RUN apk upgrade --no-cache \
+	&& apk add --no-cache ca-certificates
+
+COPY package.json package-lock.json ./
+COPY tsconfig.json tsconfig.base.json ./
+COPY packages/core/package.json packages/core/
+COPY packages/tool-engines/package.json packages/tool-engines/
+COPY packages/proxy/package.json packages/proxy/
+COPY packages/admin/package.json packages/admin/
+
+RUN --mount=type=cache,target=/root/.npm \
+	npm ci --ignore-scripts \
+	--workspace=@octafuse/core \
+	--workspace=@octafuse/tool-engines \
+	--workspace=@octafuse/admin
+
+# esbuild 依赖 postinstall 拉取当前平台二进制；--ignore-scripts 会跳过。
+# 树内可能有多份 esbuild（如 @octafuse/core 与 @opennextjs/aws 嵌套版本）；勿用 `npm rebuild esbuild`（会对多版本做错误校验）。
+RUN find node_modules -path '*/esbuild/install.js' -exec node {} \;
+
+# next-intl → @swc/core：加载 next.config 时需要当前平台的 musl 原生绑定。
+# npm optionalDependencies 有时会漏装 `@swc/core-linux-*-musl`（lockfile 在 macOS 生成时尤其常见），
+# 表现为 Failed to load native binding。已能加载则跳过（`npm install` 会重解析整棵 workspace 树，较慢）；
+# 加载失败才按当前（构建机）架构补装。
+RUN set -eux; \
+	if node -e "require('@swc/core')" 2>/dev/null; then \
+		echo "@swc/core native binding OK, skip fallback install"; \
+	else \
+		arch="$(uname -m)"; \
+		case "$arch" in \
+			aarch64|arm64) swc_arch=arm64 ;; \
+			x86_64|amd64) swc_arch=x64 ;; \
+			*) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+		esac; \
+		swc_ver="$(node -p "require('./node_modules/@swc/core/package.json').version")"; \
+		npm install --no-save --ignore-scripts "@swc/core-linux-${swc_arch}-musl@${swc_ver}"; \
+		node -e "require('@swc/core')"; \
+	fi
+
+COPY packages/core ./packages/core
+COPY packages/tool-engines ./packages/tool-engines
+COPY packages/admin ./packages/admin
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# 管理台公网前缀（线上 /tokenhub/admin）：只作用于 Vite UI 构建（资源 base、Router
+# basename、浏览器请求地址），不进入 Next basePath，Node 仍以根路径提供服务。
+ARG ADMIN_UI_PUBLIC_PATH=
+ENV ADMIN_UI_PUBLIC_PATH=${ADMIN_UI_PUBLIC_PATH}
+
+# 构建 UI 静态产物 + 正常 Next 生产产物 + Node 入口；不再生成 standalone。
+RUN npm run build -w @octafuse/core \
+	&& npm run build:docker -w @octafuse/admin \
+	&& rm -rf packages/admin/.next/cache
+
+# Admin 使用 `images.unoptimized`，不会加载 sharp；删除后 standalone 即与架构无关（见文件头注释）。
+# 守卫：若以后新增了带原生二进制的依赖，这里直接失败，而不是静默发出架构错误的镜像。
+RUN set -eux; \
+	standalone=packages/admin/.next/standalone; \
+	rm -rf "$standalone/node_modules/sharp" "$standalone/node_modules/@img"; \
+	native="$(find "$standalone" \( -name '*.node' -o -name '*.so' -o -name '*.so.*' \) | head -20)"; \
+	if [ -n "$native" ]; then \
+		echo "standalone 含平台相关原生文件，builder 固定 \$BUILDPLATFORM 后无法用于多架构镜像:" >&2; \
+		echo "$native" >&2; \
+		exit 1; \
+	fi
+
+FROM ${NODE_IMAGE} AS runner
+
+WORKDIR /app
+
+RUN apk upgrade --no-cache \
+	&& apk add --no-cache ca-certificates
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=8789
+ENV HOSTNAME=0.0.0.0
+
+# 仅用于启动自检（不参与路由）：入口脚本会比较它和 `ui-dist/ui-version.json`
+# 里记录的前端前缀，不一致就拒绝启动，避免“nginx 已剥前缀但镜像还是根构建”白屏。
+ARG ADMIN_UI_PUBLIC_PATH=
+ENV ADMIN_UI_PUBLIC_PATH=${ADMIN_UI_PUBLIC_PATH}
+
+# 标准 Next 生产运行依赖：完整 node_modules + workspace manifests + 正常 `.next`。
+COPY --from=builder /app/package.json /app/package-lock.json ./
+COPY --from=builder /app/node_modules ./node_modules
+
+COPY --from=builder /app/packages/core/package.json ./packages/core/package.json
+COPY --from=builder /app/packages/core/dist ./packages/core/dist
+COPY --from=builder /app/packages/core/migrations-postgres ./packages/core/migrations-postgres
+COPY --from=builder /app/packages/core/migrations-mysql ./packages/core/migrations-mysql
+COPY --from=builder /app/packages/tool-engines/package.json ./packages/tool-engines/package.json
+COPY --from=builder /app/packages/tool-engines/src ./packages/tool-engines/src
+
+COPY --from=builder /app/packages/admin/package.json ./packages/admin/package.json
+COPY --from=builder /app/packages/admin/tsconfig.json ./packages/admin/tsconfig.json
+COPY --from=builder /app/packages/admin/next.config.mjs ./packages/admin/next.config.mjs
+COPY --from=builder /app/packages/admin/lib ./packages/admin/lib
+COPY --from=builder /app/packages/admin/messages ./packages/admin/messages
+COPY --from=builder /app/packages/admin/public ./packages/admin/public
+COPY --from=builder /app/packages/admin/.next ./packages/admin/.next
+COPY --from=builder /app/packages/admin/ui-dist ./packages/admin/ui-dist
+COPY --from=builder /app/packages/admin/node-server-dist ./packages/admin/node-server-dist
+
+COPY docker/entrypoint.app.sh /app/docker/entrypoint.app.sh
+RUN chmod +x /app/docker/entrypoint.app.sh
+
+EXPOSE 8789
+
+# 健康检查使用内部根路径，不拼任何公网前缀，分两步：
+#   1) `/dashboard` 证明 SPA 静态入口与 Node 分发链路可用；
+#   2) `/api/auth/check` 带一个必然查不到的会话 Cookie，强制走
+#      `getValidSession` 打一次数据库；数据库不可达时该请求返回 5xx，
+#      因此不会出现“静态壳 200、库里已挂”的假 healthy。
+# 不带 Cookie 调用 `/api/auth/check` 会直接返回 200，不碰数据库，不能用来判断依赖健康。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+	CMD node -e "const base='http://127.0.0.1:'+(process.env.PORT||8789);const bad=(m)=>{console.error('healthcheck: '+m);process.exit(1)};(async()=>{const ui=await fetch(base+'/dashboard');if(!ui.ok)return bad('ui '+ui.status);const api=await fetch(base+'/api/auth/check',{headers:{cookie:'admin_session=healthcheck-probe'}});if(api.status!==200)return bad('db probe '+api.status);const body=await api.text();if(body.indexOf('authenticated')<0)return bad('unexpected body: '+body)})()"
+
+ENTRYPOINT ["/app/docker/entrypoint.app.sh"]
+CMD ["node", "packages/admin/node-server-dist/node-server.mjs"]

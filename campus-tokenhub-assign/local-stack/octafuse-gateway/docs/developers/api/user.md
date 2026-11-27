@@ -1,0 +1,1574 @@
+# 用户接口
+
+需要用户 API Key 认证的 OpenAI / Anthropic / Gemini 兼容 API。以下路径均部署在 **Proxy Worker**（`GATEWAY_URL`），与 Admin 的 `/api/admin/*` 无关。
+
+## 认证
+
+默认使用 `Authorization: Bearer <USER_API_KEY>`。
+
+```bash
+Authorization: Bearer sk-xxx...
+```
+
+针对不同协议兼容入口，也支持以下认证位置：
+
+- `POST /v1/messages`：支持 `x-api-key: <USER_API_KEY>`（Anthropic SDK 常用）
+- `POST /v1beta/models/...`：支持 `?key=<USER_API_KEY>` 或 `x-goog-api-key: <USER_API_KEY>`（Gemini SDK 常用）
+
+---
+
+## 模型 ID 与路由组（route group）
+
+网关按 `models` 表中的 **模型 ID** 解析路由；客户端通过请求里的 **`model` 字符串**（或 Gemini 路径中的模型段）选择 **计费/供应商通道**（`model_routes.route_group`，如 `default`、`free`）。
+
+### 1. `baseId` 或 `baseId:group`
+
+与 OpenAI 一样传入 `model` 字段（或 Gemini 路径中的模型段），解析规则由 `resolveModelRouting` 实现：
+
+1. **整串命中** `models.id`：视为基础模型 ID；**无显式路由组**，选路时使用 **`default`** 路由组（等价于未写后缀时请求 `baseId:default`）。
+2. **整串未命中**：按 **最后一个 `:`** 拆成 `prefix` + `suffix`。若 `prefix` 命中 `models.id`，则 **基础模型** = `prefix`，**显式路由组** = `suffix`（trim 后非空）。
+
+示例：
+
+| 传入 `model` | 基础模型 ID | 显式路由组 / 有效组 |
+|--------------|-------------|---------------------|
+| `deepseek-v3.2` | `deepseek-v3.2` | 无后缀 → 有效组 **`default`** |
+| `deepseek-v3.2:free` | `deepseek-v3.2` | `free` |
+| `deepseek-v3.2:default` | `deepseek-v3.2` | `default` |
+
+**注意**：若数据库里存在 **本身含 `:`** 的 `models.id` 且与整串完全一致，会优先按 **整条** 当作模型 ID 匹配，不再拆分。生产环境应避免模型 ID 与 `base:group` 语法冲突。
+
+### 2. 有效路由组与选路
+
+请求使用的 **有效路由组** 为：
+
+- 客户端传入 **`baseId:group`** 且 `group` 非空 → 有效组 = 该 `group`（trim，比较时 **忽略大小写**）。
+- 仅传入 **`baseId`**（整串命中 `models.id`）→ 有效组 = **`default`**。
+
+Gateway 会根据 `model_id + route_group + request_protocol + request_operation` 解析 Request Surface：先查精确 operation，再回退迁移生成的 `*` Surface。Surface 指向一个 Route Pool，Proxy 仅在该 Pool 内选择 active Target，并跳过 **disabled / 无 api_key** 的 Provider。Pool 内按 **priority（DESC）分层** + **有效策略 + weight** 做 failover；Pool 策略优先于模型与全局策略。每个 Target 还必须通过显式 adapter 拓扑校验：`passthrough` 仅允许协议与 operation 一致，跨协议的 Images / Audio 请求则必须命中注册表中的转换 adapter。
+
+没有匹配请求入口、活跃上游目标，或没有当前协议可用上游时，返回 **404** `No available route`（`gateway.no_route`，没有可用路由）。选路查询抛错仍为 **502**。完整拓扑、operation 列表与迁移兼容路径见 [route-topology.md](../architecture/route-topology.md)。
+
+模型 **`tags` 不参与**选组或计费。需要限定某一组时，请使用 **`baseId:your_group`**。
+
+**免费 / 零扣费**：路由侧用户计费（Charged cost）= 官方当刻价（目录档 × 模型官方时段倍率）× 路由有效倍率。路由有效倍率 = 有效期内的 `provider_factor`（供应商倍率，缺省及有效期外为 `1`）× 用户侧倍率。无 `schedule.mode` 时用户侧倍率 = `charged_factor` × 命中窗 `factor`（未命中为 1）；`mode: "override"` 时命中窗用窗口 `factor`，未命中用 `charged_factor`。若 `users.charged_cost_factors` 命中该目录模型与本次 route group（具体分组，其次 `"*"`，数字覆盖全部分组），再按 `system_config.USER_CHARGED_COST_FACTOR_MODE` 合成最终用户费用（默认 `multiply` 再乘用户倍率；`min` 取路由有效倍率与用户倍率的较小值；六位四舍五入）；该分组未命中不改金额。若要用户侧不扣费，将路由 **Charged factor**、对应窗口 `factor`、有效期内的 **Provider factor**，或该用户该模型（或该分组）的用户计费倍率设为 `0`。智能体工具不应用用户计费倍率、供应商倍率或模型官方时段。
+
+### 3. 预算校验
+
+除 `GET /v1/me`、`GET /v1/models` 等只读入口外，需要消耗资源的模型与工具请求都会校验 **周期额度 + 永久额度** 的总剩余；Images / Audio / Tools 还会按各自计费模式执行请求前预估。`budget_max` 为 `null` 表示周期不限额；否则总剩余 = `(budget_max − budget_spent) + (wallet_granted − wallet_spent)`。总剩余 ≤ 0 时返回 **403** `Budget exceeded`。因此 **周期上限为 0 但永久额度仍有余额** 的用户可以继续请求（例如 0027 把注册赠额迁入 wallet 后 `budget_max=0`、`wallet_granted=0.5`）。旧规则 `budget_spent >= budget_max` 会把 `0 >= 0` 误判为超额，已废弃。
+
+路由组（`default`、`free` 等）仅影响 **选路与计费快照**（见下文用量日志），**不再**单独绕过预算或走按日免费次数表。订阅或周期型额度使用 User 上的 `budget_max` / `budget_base` / `budget_period`；购买额度、注册赠额等永久加额使用 Admin `POST /api/admin/users/:id/wallet/credit`。`budget_period = 'none'` 只表示周期池不自动重置，不应代替 Wallet 累加购买额度。API Key 仅用于鉴权与归集。
+
+### 4. 请求限流（Key / 用户 RPM）
+
+鉴权后对 **Key 窗口**与 **用户合计窗口**双重执行（先 Key 后 User；Key 已超限则不消耗用户窗口）。两层 JSON 形状相同，当前仅 `rpm`（从当前时刻回溯 60 秒的滚动窗口请求上限，**不是** UTC 自然分钟）：`NULL` / 空对象该层不限，`rpm: 0` 拒绝该层计次请求。两层独立计数，不把用户配置复制到新建 Key。超限返回 **429** `gateway.rate_limited`（含 `Retry-After`，等到该层窗口内有空位），**不区分**是哪一层。计数在代理服务进程 / isolate 内存中，属软上限。
+
+`GET /v1/me` 与 `GET /v1/models` **两层都不计入**。其它 `/v1/*` 会计入（若对应层配置了 `rpm`）。配置入口为管理后台用户详情的用户合计 RPM，以及密钥（Keys）页的单 Key RPM；API 见 [admin.md](./admin.md) 的 `PATCH /admin/users/:id` 与 `PATCH /admin/keys/:id`。
+
+### 5. 用量日志 `api_key_request_logs`
+
+写入的 **`model_id` 为库内基础模型 ID**（不带 `:group` 后缀）；实际选用的 **`route_group`**、`request_protocol` / `request_operation`、`model_surface_id`、`route_pool_id`、`route_target_id`、`upstream_protocol` / `upstream_operation`、`adapter` 与 `route_trace` 会随请求落库。`provider_key_id` / `provider_key_label` / `provider_key_fingerprint` 为历史兼容列名，现对应 **`providers.id` / `providers.name` / fingerprint(`providers.api_key`)**。相对目录标准价的倍率请见 Target 的 **`price_override`**：有效期内的 **`provider_factor`**（供应商倍率，标准价不乘）再乘 **`charged_factor`** / **`metered_factor`**。
+
+### 6. 输出长度（`max_tokens` / `maxOutputTokens`）
+
+- Gateway **不会**根据 D1 **`models.max_tokens`** 改写或截断用户请求；该字段在 `GET /v1/models` 等处仅作**目录/展示参考**。
+- 实际上游请求体由 **`model_routes.custom_params`** 与客户端 JSON **深度合并**得到（实现见 `buildRouteRequestBody`）。默认 **客户端显式提供的字段优先**；若该路由信封里 **`force_override.body`** 为 true（管理后台自定义参数请求体旁的「强制覆盖（Force override）」），则 **路由字段优先**。HTTP 头在 **`headers`** 中，由 **`force_override.headers`** 单独控制，见 [Route 默认参数合并](#route-默认参数合并)。Route 未配置的字段还可能继承自 **`providers.custom_params`** 这一层更低优先级的默认值，见 [Provider 级默认参数](#provider-级默认参数)。
+- 若客户端不传 `max_tokens`（OpenAI Chat、Anthropic Messages）或不传 `generationConfig.maxOutputTokens`（Gemini），则由路由 JSON 中的默认值或**上游服务商的 API 默认**决定。
+- 运维若希望为某条路由提供默认最大输出，可在该路由的 **`custom_params`** 中配置，例如 OpenAI/Anthropic 顶层 `"max_tokens": 4096`，Gemini 使用嵌套 `"generationConfig": { "maxOutputTokens": 8192 }`。
+- 若需要在客户端已显式传入时仍强制使用路由值（例如硬封顶 `max_tokens`），在该路由开启强制覆盖。未开启时合并规则仍为客户端优先。
+
+---
+
+## 聊天补全
+
+OpenAI 兼容的聊天补全接口，支持流式输出。
+
+### 请求
+
+```
+POST /v1/chat/completions
+```
+
+### 请求体
+
+```json
+{
+  "model": "glm-4",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant."
+    },
+    {
+      "role": "user",
+      "content": "Hello!"
+    }
+  ],
+  "stream": true,
+  "temperature": 0.7,
+  "max_tokens": 2048
+}
+```
+
+`model` 可使用 **`baseId`** 或 **`baseId:route_group`**（见上文）。网关会将上游请求的 `model` 替换为路由上的 `provider_model_name`。
+
+### 响应
+
+**非流式响应：**
+
+```json
+{
+  "id": "chatcmpl-xxx",
+  "object": "chat.completion",
+  "created": 1705800000,
+  "model": "glm-4",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 20,
+    "completion_tokens": 10,
+    "total_tokens": 30
+  }
+}
+```
+
+**流式响应（SSE）：**
+
+```
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1705800000,"model":"glm-4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1705800000,"model":"glm-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1705800000,"model":"glm-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+### 错误响应
+
+分类权威是响应头 `X-OctaFuse-Error-Code`，完整清单见 [代理服务错误码](./error-codes.md)。
+
+| 场景 | HTTP | 示例 `error` |
+|------|------|----------------|
+| 请求体非法 JSON | 400 | `Invalid JSON body` |
+| 缺少 `model` | 400 | `Missing model` |
+| `/v1/images/edits` Content-Type 非 `multipart/form-data` | 400 | `Unsupported Content-Type for /v1/images/edits: expected multipart/form-data, got "…"` |
+| `/v1/images/edits` multipart 解析失败 | 400 | `Invalid multipart body` |
+| 预算超限 | 403 | `Budget exceeded` |
+| 模型不存在 | 404 | `Model not found` |
+| 没有可用路由（模型存在，但当前入口无匹配请求入口 / 活跃上游目标 / 协议可用上游） | 404 | `No available route`（`gateway.no_route`） |
+| 路由解析失败等 | 502 | 具体错误信息 |
+
+Images 入参校验失败会打结构化 `console.warn('[Gateway Images] request rejected', …)`（含 `contentType` / `bodyKeys` / `hasModel` 等，**不含** prompt / 图片字节）。Proxy 另有通用 4xx 短错误体日志 `[Gateway] client error response`。
+
+### 示例
+
+**非流式请求：**
+
+```bash
+curl http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk-xxx..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4",
+    "messages": [
+      {"role": "user", "content": "Say hello in 3 languages"}
+    ]
+  }'
+```
+
+**指定 free 路由组：**
+
+```bash
+curl http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk-xxx..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v3.2:free","messages":[{"role":"user","content":"hi"}]}'
+```
+
+---
+
+## Responses
+
+OpenAI Responses 兼容入口，支持非流式 JSON 与 `stream=true` 的 typed SSE。上游必须配置 `openai.responses` 请求入口，并使用同协议 `passthrough`。流式 `data:` 事件若缺少顶层 `sequence_number`，网关会按本次连接注入递增整数（从 0 起）；上游已带该字段的事件原样转发。
+
+### 请求
+
+```
+POST /v1/responses
+```
+
+### 请求体
+
+```json
+{
+  "model": "gpt-4.1",
+  "input": [
+    { "role": "user", "content": "Hello" }
+  ],
+  "stream": true,
+  "store": false
+}
+```
+
+`model` 可使用 **`baseId`** 或 **`baseId:route_group`**（见上文）。网关会将上游请求的 `model` 替换为路由上的 `provider_model_name`，其余字段默认原样透传。
+
+`previous_response_id` 仅在单一上游目标（或不会切换目标的路由池）下透传。多目标且无法保证回到同一上游时返回 **409** `responses.state_route_unavailable`。当前不提供 Conversations、background retrieve/cancel 或 Chat ↔ Responses 转换。
+
+### 示例
+
+```bash
+curl http://localhost:8787/v1/responses \
+  -H "Authorization: Bearer sk-xxx..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4.1",
+    "input": [{"role": "user", "content": "Hello"}],
+    "store": false
+  }'
+```
+
+---
+
+## Anthropic Messages 兼容接口
+
+Anthropic 兼容入口，支持 `messages` 与流式。正式路径只有 `POST /v1/messages`。
+
+另外两条路径是给 SoloEnt Agent 历史版本用的临时别名，不是公开接口，后续要删：
+
+| 路径 | 只服务 |
+|------|--------|
+| `POST /messages` | SoloEnt Agent 0.18.0–0.18.5，且登录态里的 Anthropic 地址不带 `/v1` |
+| `POST /v1/v1/messages` | SoloEnt Agent 0.17.x，且 2026-09-17 之后签发的登录态把 Anthropic 地址写成了 `{root}/v1` |
+
+0.18.6 起 SoloEnt Agent 用网关根地址自己拼 `/v1`，只请求 `POST /v1/messages`。等 0.17.x 与 0.18.0–0.18.5 退出、这些版本的插件 JWT（30 天）过期后，删除上述两条路径，以及 `isAnthropicMessagesPath` 里对应的别名判断。
+
+### 请求
+
+```
+POST /v1/messages
+```
+
+### 请求体示例
+
+```json
+{
+  "model": "claude-3-7-sonnet",
+  "max_tokens": 1024,
+  "messages": [
+    { "role": "user", "content": "Write a haiku about coding." }
+  ],
+  "stream": true
+}
+```
+
+`model` 同样支持 `baseId:route_group`；仅 **Anthropic**（`upstream_protocol = anthropic`）路由会参与转发。
+
+### 认证示例
+
+```bash
+curl http://localhost:8787/v1/messages \
+  -H "x-api-key: sk-xxx..." \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-7-sonnet",
+    "max_tokens": 512,
+    "messages": [{"role":"user","content":"hello"}]
+  }'
+```
+
+> 网关会按 `request_protocol = anthropic` 记录用量与计费。
+
+---
+
+## Gemini 兼容接口
+
+Gemini 兼容入口，支持 `generateContent` 与 `streamGenerateContent`。
+
+### 请求
+
+```
+POST /v1beta/models/:modelAction
+```
+
+其中 `:modelAction` 格式为 **`{modelSegment}:{generateContent|streamGenerateContent}`**，`modelSegment` 为传给 `resolveModelRouting` 的原始字符串（可为 **`baseId`** 或 **`baseId:routeGroup`**）。解析时以 **最后一个 `:`** 为界，后缀必须是 `generateContent` 或 `streamGenerateContent`。
+
+示例：
+
+- `gemini-2.5-pro:generateContent`
+- `deepseek-v3.2:free:streamGenerateContent` → 模型段 `deepseek-v3.2:free` → 基础 `deepseek-v3.2`、显式组 `free`
+
+### 请求体示例
+
+```json
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [{ "text": "Explain recursion in one paragraph." }]
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1024
+  }
+}
+```
+
+### 认证示例
+
+```bash
+curl "http://localhost:8787/v1beta/models/gemini-2.5-pro:generateContent?key=sk-xxx..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [{"role":"user","parts":[{"text":"hello"}]}]
+  }'
+```
+
+**流式：**
+
+```bash
+curl "http://localhost:8787/v1beta/models/gemini-2.5-pro:streamGenerateContent?key=sk-xxx..." \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"Write a short poem"}]}]}'
+```
+
+> 网关会按 `request_protocol = gemini` 记录用量与计费；仅 **Gemini** 协议路由参与转发。
+
+### 图片模型
+
+官方图片模型与上面的文本入口相同。目录模型输出模态含 `image` 时，网关按图片 token 计费，响应图片在 `candidates[].content.parts[].inlineData`。`thought: true` 的图片不计入成功张数。没有非 thought 图片、客户端取消和网关超时都不扣费。详见 [Gemini 原生生图](../architecture/gemini-image.md)。
+
+```bash
+curl "http://localhost:8787/v1beta/models/gemini-3.1-flash-image:generateContent?key=sk-xxx..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [{"role":"user","parts":[{"text":"a red apple on a white background"}]}],
+    "generationConfig": {
+      "responseModalities": ["TEXT", "IMAGE"],
+      "imageConfig": {"aspectRatio": "1:1", "imageSize": "1K"}
+    }
+  }'
+```
+
+流式把 action 换成 `streamGenerateContent`。调试台只发非流式 `generateContent`。
+
+### 上游 Provider `endpoints`（Gemini 多入口：Developer / Vertex Express / 项目级 Vertex）
+
+Admin 中 Provider 的权威配置为 **`providers.endpoints`** JSON（迁移 `0011_provider_endpoints`）。Gemini 协议优先写：
+
+```json
+{ "gemini": { "base": "https://generativelanguage.googleapis.com/v1beta/models" } }
+```
+
+`base` 须配置到 **`{model}` 之前**的完整路径前缀（网关不再自动补 `/v1beta/models`）；出站由 `resolveUpstreamEndpoint` 派生为 `{base}/{upstreamModel}:{action}`。非标准厂商优先配置统一模板：
+
+```json
+{
+  "gemini": {
+    "endpoints": {
+      "models.generate": "https://example.com/v1beta/models/{model}:{action}"
+    }
+  }
+}
+```
+
+`models.generate` 模板必须同时包含 **`{model}`** 与 **`{action}`**，一次配置覆盖 `generateContent` 和 `streamGenerateContent`。旧的 `generateContent` / `streamGenerateContent` 独立模板仍可读写以兼容历史数据；运行时优先级为 `models.generate` → 对应旧 action 模板 → `base` 派生。新配置不应继续拆成两个旧键。
+
+**客户端入口**始终为 `POST /v1beta/models/...`（与 `@google/genai` SDK 兼容）。
+
+| 接入风格 | 示例 `endpoints.gemini.base` | 网关出站 URL 形态 |
+|----------|------------------------------|-------------------|
+| Developer API | `https://generativelanguage.googleapis.com/v1beta/models` | `{base}/{upstreamModel}:{action}?key=` |
+| Vertex AI Express（API Key） | `https://aiplatform.googleapis.com/v1/publishers/google/models` | `{base}/{upstreamModel}:{action}?key=` |
+| Vertex AI（项目级 · Bearer） | `https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/{LOCATION}/publishers/google/models` | `{base}/{upstreamModel}:{action}` + `Authorization: Bearer` |
+| Vertex 兼容聚合（Bearer） | 写到 `{model}` 前，并设 `auth: "bearer"` | `{base}/{upstreamModel}:{action}` + `Authorization: Bearer` |
+| 自定义反代 / 其他前缀 | 按上游文档写到 `{model}` 前 | 由 `auth` 决定，省略则为 `?key=` |
+
+- **`upstreamModel`** 来自路由的 `provider_model_name`（裸模型名，如 `gemini-2.5-flash`），与客户端路径中的 `modelSegment`（可含 `:route_group`）独立。
+- 仅配置裸 host（如 `https://generativelanguage.googleapis.com`）会在出站时报错。
+- Vertex Express 与 Developer API 的请求体、响应体、SSE、`usageMetadata` 一致。
+- **项目级 Vertex** 没有免 `project` / `location` 的通用 Gemini 前缀；`locations/global` 仍须带项目 ID。凭证栏粘贴 **GCP 服务账号 JSON**（`"type": "service_account"`）；网关换成 OAuth access token 后，OpenAI 与原生 Gemini 都走 `Authorization: Bearer`。不要把服务账号 JSON 或 Vertex API Key 塞进 `?key=`。Express 的 Vertex API Key 只覆盖原生 Gemini。
+- 官方 **OpenAI Chat Completions** 不走 `endpoints.gemini`，而走 `endpoints.openai`：`https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/{LOCATION}/endpoints/openapi/chat/completions`。Express Mode 没有这条 OpenAI 端点。生图走 chat `modalities`，不要配 `/images/generations`。OpenAI 协议的 `provider_model_name` 若缺少 `google/`，出站时会自动补上（原生 Gemini 不加）。
+- 出站鉴权只认 `endpoints.gemini.auth`：`query-key`（`?key=`）或 `bearer`（`Authorization`）；省略则为 `query-key`。服务账号会强制 Bearer。任意 Vertex 兼容上游在供应商上选 Bearer 即可，不必改核心代码。
+
+权威配置为 **`providers.endpoints`**（迁移 **`0012`** 已删除 `base_url_*` 三列）。Gemini 须在 Admin 或 API 中把 `endpoints.gemini.base` 配到 `{model}` 之前的完整路径前缀（见上表）。
+
+---
+
+## 获取模型列表
+
+OpenAI 兼容的模型列表接口。返回网关中 **至少有一条活跃路由** 的模型（模型集合全量可见，不按 API Key 过滤）。`model_info.discounts` 会按 route group 叠该 Key 所属用户的 `charged_cost_factors`（具体分组，其次 `"*"`，数字覆盖全部分组）；某个分组未命中时与公开目录倍率一致。本接口与 `GET /v1/me` 一样不计入 Key / 用户 RPM，额度用尽时仍可访问。
+
+面向 Chat Completions / Agent 的默认行为：**仅返回 LLM**（排除文生图、ASR、TTS 与向量模型；多模态「看图」LLM 仍会返回）。文生图模型（如 `gpt-image-2`）请使用 `POST /v1/images/*` 或 `kind=image`；语音转写请使用 `POST /v1/audio/transcriptions` 或 `kind=asr`，语音合成请使用 `POST /v1/audio/speech` 或 `kind=tts`；`kind=audio` 是同时包含 ASR 与 TTS 的兼容写法；`kind=all` 不过滤。类型判定规则见 [模型类型](../reference/model-kinds.md)。向量（Embedding）模型使用 `POST /v1/embeddings`、Gemini `:embedContent` / `:batchEmbedContents` 或 `kind=embedding`。
+
+`model_info.inbound` 是**请求入口**（`protocol` + `operation`），按当前可见路由列出 LLM 文本入口以及文生图 / ASR / TTS operation。它们不是 `GET /catalog/models` 的上游 `protocols`。公开目录的 `inbound` 与此同形。选哪条入口以及思考档位仍由客户端维护，本接口不返回 `thinking_config`。
+
+### 请求
+
+```
+GET /v1/models
+```
+
+可选查询参数：
+
+| 参数 | 说明 |
+|------|------|
+| `route_groups` | CSV，大小写不敏感。未传 → 默认 `default,free`；传入后仅保留匹配的 group（无匹配则该模型不出现） |
+| `kind` | `llm`（**默认**）仅文本/多模态 LLM（排除文生图、ASR、TTS）；`image` 仅文生图；`asr` 仅语音识别；`tts` 仅语音合成；`audio` 为 ASR **与** TTS 的兼容别名；`embedding` 仅向量；`all` 不过滤 kind。非法值回退为 `llm`。取值与管理后台 Kind 一致，见 [模型类型](../reference/model-kinds.md) |
+
+### 响应
+
+```json
+{
+  "data": [
+    {
+      "id": "glm-4",
+      "object": "model",
+      "owned_by": "octafuse",
+      "model_info": {
+        "display_name": "GLM-4",
+        "vendor": "zhipu",
+        "tags": ["pro", "general"],
+        "route_groups": ["default", "free"],
+        "context_window": 128000,
+        "max_tokens": 4096,
+        "pricing_profile": {
+          "tiers": [
+            {
+              "upto": null,
+              "label": null,
+              "input_price": 0.01,
+              "output_price": 0.01,
+              "cache_read_price": null,
+              "cache_write_price": null
+            }
+          ]
+        },
+        "input_price": 0.01,
+        "output_price": 0.01,
+        "input_modalities": ["text", "image", "file"],
+        "output_modalities": ["text"],
+        "released_at": "2024-06-05",
+        "inbound": [{ "protocol": "openai", "operation": "chat" }],
+        "discounts": {
+          "default": {
+            "timezone": "Asia/Shanghai",
+            "kind": "flat",
+            "schedule_mode": "multiply",
+            "route": { "priority": 10, "weight": 1 },
+            "current": { "catalog_factor": 1, "route_factor": 0.7, "composite_factor": 0.7 },
+            "windows": [{ "catalog_factor": 1, "route_factor": 0.7, "composite_factor": 0.7 }]
+          }
+        },
+        "metadata": {}
+      }
+    }
+  ],
+  "object": "list"
+}
+```
+
+### model_info 字段说明
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `display_name` | string \| null | 模型显示名称 |
+| `vendor` | string | 模型供应商标识，如 `openai`、`anthropic`、`google`。为空或仅空白时返回 `other`（与 Catalog 对齐；列缺省为 `other`） |
+| `tags` | string[] | 运营维护的展示标签，如 `["pro", "general"]`（**仅展示/目录元数据**，不参与自动选组或计费公式）。不再注入 `Discount.*`；折扣以 `discounts` 为准 |
+| `route_groups` | string[] | 当前模型下 **活跃路由** 的去重 `route_group` 列表，供客户端构造请求中的 `baseId:group` |
+| `context_window` | number \| null | 上下文窗口大小（token 数） |
+| `max_tokens` | number \| null | 目录/展示用参考（常见最大输出能力）；**转发时不用于截断**，实际输出上限见上文「输出长度」 |
+| `pricing_profile` | object \| null | 解析后的模型主定价（与 Catalog 同形：`{ "tiers": [ { "upto", "label", "input_price", "output_price", … } ], "schedule"?: [ { "start", "end", "factor", "days"? } ] }`）；非法 JSON 为 `null`。**末档 `upto` 为 `null` 表示开放上界**；完整阶梯与 cache 价以此为准。可选 `schedule` 为官方分时倍率（时区为 `BUSINESS_TIMEZONE`，不写入 JSON） |
+| `input_price` | number \| null | **兼容展示**：由 `pricing_profile` 派生（取各档中 **最低** `input_price` 所在档的输入价，**不含**官方时段）；无合法 profile 时为 `null` |
+| `output_price` | number \| null | **兼容展示**：与上档同行的输出价（$/1M），同样不含官方时段 |
+| `input_modalities` | string[] \| null | 支持的输入模态（OpenRouter 风格）：`text`、`image`、`audio`、`video`、`file`；客户端可据此限制附件类型 |
+| `output_modalities` | string[] \| null | 支持的输出模态：`text`、`image`、`audio` |
+| `released_at` | string \| null | 模型发布日期（`YYYY-MM-DD`） |
+| `discounts` | object | 按 `route_group` 派生的前台折扣。每个 group 含 `kind`（`flat` / `schedule`）、`timezone`、`schedule_mode`、代表路由的 `priority`/`weight`、`current` 当刻窗口，以及 `windows[]`（`catalog_factor` × `route_factor` = `composite_factor`）。代表路由取该 group 下 active 路由中 `priority` 最大、同层 `weight` 最大的一条；两者仍并列时取当刻 `composite_factor` 最小（折扣最大）的一条，倍率也相同则保持列表原顺序。官方或路由时段未覆盖的钟点会补 `catalog_factor=1` 的兜底窗（含带 `days` 的工作日高峰：工作日空隙与周末整日都会补），因此仅工作日高峰、倍率相同的官方窗不会被压成 `kind: flat`。若该用户配置了该目录模型的 `charged_cost_factors`，再按 route group 查找（具体分组，其次 `"*"`，数字覆盖全部分组）并按 `USER_CHARGED_COST_FACTOR_MODE` 叠进 **`route_factor`** 后重算 `composite_factor`（`multiply` 为路由 × 用户；`min` 取较小 Charged；`catalog_factor` 不变）。该分组未命中时与 `GET /catalog/models` 倍率一致 |
+| `inbound` | object[] | **请求入口**（客户端可打的公开路径）：`{ protocol, operation }`。聚合当前可见 `route_groups` 下 active 请求入口：LLM 文本为 `openai.chat`、`openai.responses`、`anthropic.messages`、`gemini.models.generate`；图 / 音频为 `openai.images.generations`、`openai.images.edits`、`openai.audio.transcriptions`、`openai.audio.speech`。不含 DashScope、MiniMax、ElevenLabs、火山方舟的原生透传入口。`operation=*` 在同协议没有精确入口时展开为该协议默认文本 operation（OpenAI → `chat`，Anthropic → `messages`，Gemini → `models.generate`）；同协议已有精确入口（含图 / 音频）时不再展开。列表按稳定顺序去重（LLM 文本在前，`responses` 排在 `chat` 前，随后为图 / 音频），**不是**推荐入口；选哪条由客户端决定。与 `GET /catalog/models` 的 `protocols`（**上游协议**）不同：Chat 与 Responses 都是 `openai`，必须看 `operation` |
+| `metadata` | object \| undefined | 扩展元数据 |
+
+### 示例
+
+```bash
+# Agent / Chat：默认仅 LLM
+curl http://localhost:8787/v1/models \
+  -H "Authorization: Bearer sk-xxx..."
+
+# 仅文生图
+curl "http://localhost:8787/v1/models?kind=image" \
+  -H "Authorization: Bearer sk-xxx..."
+
+# 仅语音识别 / 仅语音合成（kind=audio 同时返回两者）
+curl "http://localhost:8787/v1/models?kind=asr" \
+  -H "Authorization: Bearer sk-xxx..."
+
+curl "http://localhost:8787/v1/models?kind=tts" \
+  -H "Authorization: Bearer sk-xxx..."
+
+# 全部 kind（再按定价 / 模态 / inbound 自行筛选）
+curl "http://localhost:8787/v1/models?kind=all" \
+  -H "Authorization: Bearer sk-xxx..."
+```
+
+---
+
+## 公开模型目录（Catalog Discovery）
+
+面向门户、文档站等 **无需用户 API Key** 的运行时能力发现接口。基于 **active `model_routes`** 聚合各 `route_group` 支持的 **`upstream_protocol`**，并用同一批路由的请求入口填充 `inbound`。不返回 provider id、API key、`provider_model_name` 等运维字段。
+
+### 请求
+
+```
+GET /catalog/models
+```
+
+可选查询参数：
+
+| 参数 | 说明 |
+|------|------|
+| `route_groups` | CSV，大小写不敏感。未传 → 包含模型下 **全部** active route group；传入后仅保留匹配的 group（无匹配则该模型不出现在列表中） |
+
+### 响应
+
+```json
+{
+  "object": "list",
+  "generated_at": "2026-05-26T13:00:00.000Z",
+  "data": [
+    {
+      "id": "glm-4",
+      "display_name": "GLM-4",
+      "vendor": "zhipu",
+      "context_window": 128000,
+      "max_tokens": 4096,
+      "pricing_profile": {
+        "tiers": [
+          {
+            "upto": null,
+            "label": null,
+            "input_price": 0.01,
+            "output_price": 0.01,
+            "cache_read_price": null,
+            "cache_write_price": null
+          }
+        ]
+      },
+      "tags": ["general"],
+      "route_groups": ["default", "free"],
+      "protocols": ["openai"],
+      "protocols_by_group": {
+        "default": ["openai"],
+        "free": ["openai"]
+      },
+      "inbound": [{ "protocol": "openai", "operation": "chat" }],
+      "recommended_protocol": "openai",
+      "input_modalities": ["text", "image", "file"],
+      "output_modalities": ["text"],
+      "released_at": "2024-06-05",
+      "discounts": {
+        "default": {
+          "timezone": "Asia/Shanghai",
+          "kind": "flat",
+          "schedule_mode": "multiply",
+          "route": { "priority": 10, "weight": 1 },
+          "current": { "catalog_factor": 1, "route_factor": 0.7, "composite_factor": 0.7 },
+          "windows": [{ "catalog_factor": 1, "route_factor": 0.7, "composite_factor": 0.7 }]
+        }
+      },
+      "metadata": {}
+    }
+  ]
+}
+```
+
+Catalog 条目同样包含 `input_modalities`、`output_modalities`、`released_at`、`discounts`。`discounts` 形状与 `GET /v1/models` 的 `model_info.discounts` 相同，但 **只含官方时段 × 代表路由 Charged**（平台公共折扣），不含用户级 `charged_cost_factors`。`pricing_profile` 为解析后的对象，可含 `schedule`。`discounts.*.timezone` 即 `system_config.BUSINESS_TIMEZONE`。`vendor` 为空或仅空白时返回 `other`。`tags` 为运营维护的展示标签，不含派生的 `Discount.*`。
+
+`inbound` 与 `GET /v1/models` 的 `model_info.inbound` 同形：按当前可见 `route_groups` 聚合客户端请求入口（`protocol` + `operation`）。同一 `openai` 下，`chat`（`/v1/chat/completions`）与 `responses`（`/v1/responses`）是不同端点。门户展示可调用路径时应读 `inbound`，不要只凭上游 `protocols` 猜测。聚合规则、operation 白名单与稳定排序见上文 `inbound` 字段说明。
+
+`recommended_protocol` 是门户展示用提示，**不是**强制入口：在当前可见 `protocols` 去重集合中，若同时存在多种协议，优先 `anthropic`，其次 `gemini`；否则取稳定排序后的第一项（顺序为 `openai` → `anthropic` → `gemini` → `dashscope`），空则 `openai`。
+
+### 与 `GET /v1/models` / Admin 的差异
+
+| 维度 | `GET /v1/models` | `GET /catalog/models` | `GET /admin/models` | `GET /admin/users/:id/display-discounts` |
+|------|------------------|------------------------|---------------------|------------------------------------------|
+| 部署 | Proxy | Proxy | Admin | Admin |
+| 认证 | 用户 API Key | **无** | Console Session 或具名 Admin API Key | Console Session 或 `users.read` |
+| `discounts` | 官方时段 × 路由 Charged，再叠该用户模型倍率 | 仅官方时段 × 路由 Charged（公共折扣） | — | 与 `/v1/models` 相同合成；**只含已配置用户倍率的模型** |
+| 默认 `route_groups` | `default,free` | 未传 → **全部** active group | — | 未传 → **全部** active group |
+| 默认 `kind` | `llm`（排除文生图、ASR、TTS、向量；`kind=asr` / `kind=tts` 分别为语音识别 / 语音合成，`kind=audio` = 两者；`kind=embedding` = 向量） | 不过滤 kind | — | 不过滤 kind |
+| 协议能力 | `inbound`（请求入口 protocol + operation） | `protocols` / `protocols_by_group`（**上游** `upstream_protocol`）以及 `inbound`（请求入口，与 `/v1/models` 同形） | 不返回 | 不返回（只 overlay `discounts`） |
+| 计入用户 RPM | 否 | 否 | 否 | 否 |
+| 主要用途 | Agent 兼容列表 | 门户 / 公开 discovery | 运维 CRUD | 用户个性化折扣 overlay |
+
+Admin 静态导入目录见 **`GET /admin/models/import/catalog`**（与上表无关，见 [管理接口](./admin.md#admin-vs-proxy-catalog)）。
+
+### 示例
+
+```bash
+curl http://localhost:8787/catalog/models
+curl "http://localhost:8787/catalog/models?route_groups=default,web"
+```
+
+---
+
+## Web Search（Agent 工具）
+
+协议无关的产品 API（与 `/v1/me` 同类），供桌面 agent 在模型发起 `web_search` tool call 后调用。**不是** OpenAI / Anthropic / Gemini 推理协议的一部分。Agent Tools 按 Active 引擎的**三账本绝对单价**计费（联网类按次；AI 检测按计费字符单元 × 单价）：catalog 存 `metered` / `standard` / `charged`（旧键 `cost` 为 `charged` 别名；仅有 `cost` 时三列相等）。成功写入日志三列；**仅 `charged_cost` 累加 `budget_spent`**。`pricing_audit` 为 v4 `fixed_tool_cost`（含 `unit_prices` / `totals`）；不应用模型 Route 的价格倍率或时段 schedule。失败请求三列均为 0。
+
+### 请求
+
+```
+POST /v1/tools/web-search
+Authorization: Bearer <USER_API_KEY>
+```
+
+### 请求体
+
+```json
+{
+  "query": "latest TypeScript release notes",
+  "allowed_domains": ["typescriptlang.org"],
+  "blocked_domains": [],
+  "count": 8
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `query` | 必填；至少 2 个字符 |
+| `allowed_domains` / `blocked_domains` | 可选；**不可同时**提供 |
+| `count` | 可选；1–10，默认 8 |
+
+### 行为
+
+1. 校验用户 API Key；周期额度与永久额度的总余额不足 → **403** `{ "error": "Budget exceeded" }`
+2. 从 Admin `system_config` 读取搜索配置（无环境变量回退）：
+   - `WEB_SEARCH_ACTIVE`（白名单：`bocha` | `tavily` | `cleversee` | `tencent_wsa` | `deepseek`；非法值 → **503**）。`deepseek` 引擎的上游查询词最长 128 个字符，超出部分由 Gateway 截断
+   - `WEB_SEARCH_CATALOG`（JSON：按引擎存 `{ "apiKey", "metered", "standard", "charged" }`；可带兼容键 `cost`（= charged）；Active 引擎必须有非空 `apiKey`，否则 **503**）
+   - 默认单价（catalog 未写价格时）三列均为 **0.001**，单位随 `BILLING_CURRENCY`
+   - 兼容：若尚无 `WEB_SEARCH_CATALOG`，仍可读旧三键 `WEB_SEARCH_PROVIDER` / `WEB_SEARCH_API_KEY` / `WEB_SEARCH_COST`（仅读取，Admin 不再写入）
+3. 调用 Active 引擎；**仅成功**后按该引擎 **charged** 单价计入 `users.budget_spent`
+4. 上游失败不扣费
+
+运营侧在 Admin → **Tools → Configuration** 按引擎维护 catalog 并选择 Active；调用记录见 **Logs → Request Logs**（Type 选 **REST tools**，`provider_id=octafuse-tools`）。
+
+### 响应
+
+```json
+{
+  "data": {
+    "results": [
+      {
+        "title": "…",
+        "url": "https://…",
+        "snippet": "…",
+        "summary": "…"
+      }
+    ],
+    "cost": 0.001
+  }
+}
+```
+
+用量日志 `api_key_request_logs` 中 `model_id` 记为 `tool:web-search`，`provider_id` 为 `octafuse-tools`。
+
+---
+
+## Web Fetch（Agent 工具）
+
+协议无关的产品 API（与 `/v1/me` 同类），供桌面 agent 在模型发起 `web_fetch` tool call 后调用。**不是** OpenAI / Anthropic / Gemini 推理协议的一部分。
+
+### 请求
+
+```
+POST /v1/tools/web-fetch
+Authorization: Bearer <USER_API_KEY>
+```
+
+### 请求体
+
+```json
+{
+  "url": "https://example.com/page"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `url` | 必填；仅 `http` / `https`。Gateway 拒绝 localhost、私网字面量与元数据 host（不做 DNS 反查） |
+
+未知字段可忽略。
+
+### 行为
+
+1. 校验用户 API Key；周期额度与永久额度的总余额不足 → **403** `{ "error": "Budget exceeded" }`
+2. 从 Admin `system_config` 读取抓取配置（无环境变量回退）：
+   - `WEB_FETCH_ACTIVE`（白名单：`firecrawl` | `tavily` | `jina` | `deepseek`；默认 `firecrawl`；非法值 → **503**）
+   - `WEB_FETCH_CATALOG`（JSON：按引擎存 `{ "apiKey", "metered", "standard", "charged" }`；可带兼容键 `cost`；Active 引擎必须有非空 `apiKey`，否则 **503**）
+   - 默认单价（catalog 未写价格时）三列均为 **0.002**，单位随 `BILLING_CURRENCY`
+   - 兼容：若尚无 `WEB_FETCH_CATALOG`，仍可读旧三键 `WEB_FETCH_PROVIDER` / `WEB_FETCH_API_KEY` / `WEB_FETCH_COST`（仅读取，Admin 不再写入）
+3. URL 校验失败 → **400**
+4. 调用 Active 引擎；**仅成功**后按该引擎单价计入 `users.budget_spent`
+5. 上游失败不扣费；上游 **401/403** 映射为 **502**（勿透出成用户 Key 无效）
+
+运营侧在 Admin → **Tools → Configuration** 按引擎维护 catalog 并选择 Active；调用记录见 **Logs → Request Logs**（Type 选 **REST tools**，`provider_id=octafuse-tools`）。
+
+### 响应
+
+```json
+{
+  "data": {
+    "url": "https://example.com/page",
+    "title": "…",
+    "content": "# markdown…",
+    "cost": 0.002
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `url` | 最终页面 URL（引擎回写时可能与请求不同） |
+| `title` | 可选；页面标题 |
+| `content` | Markdown 正文 |
+| `cost` | 本次扣费；单位随 `BILLING_CURRENCY` |
+
+用量日志 `api_key_request_logs` 中 `model_id` 记为 `tool:web-fetch`，`provider_id` 为 `octafuse-tools`。
+
+---
+
+## Web Deep Search（Agent 工具）
+
+协议无关的产品 API，供「搜 + 读」一体的深度检索（Firecrawl Search / Jina Search / DeepSeek Search）。相对普通 Web Search，结果常含页面正文，延迟与单价更高。**不是** OpenAI / Anthropic / Gemini 推理协议的一部分。
+
+### 请求
+
+```
+POST /v1/tools/web-deep-search
+Authorization: Bearer <USER_API_KEY>
+```
+
+### 请求体
+
+```json
+{
+  "query": "latest TypeScript release notes",
+  "count": 5
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `query` | 必填；至少 2 个字符 |
+| `count` | 可选；1–10，默认 5 |
+
+### 行为
+
+1. 校验用户 API Key；额度不足 → **403** `{ "error": "Budget exceeded" }`
+2. 从 Admin `system_config` 读取配置（无环境变量回退）：
+   - `WEB_DEEP_SEARCH_ACTIVE`（白名单：`firecrawl` \| `jina` \| `deepseek`；非法值 → **503**）。`deepseek` 引擎的上游查询词最长 128 个字符，超出部分由 Gateway 截断
+   - `WEB_DEEP_SEARCH_CATALOG`（JSON：按引擎 `{ "apiKey", "metered", "standard", "charged" }`；可带兼容键 `cost`；Active 必须有非空 `apiKey`，否则 **503**）
+   - 默认单价三列均为 **0.01**（catalog 未写价格时），单位随 `BILLING_CURRENCY`
+3. 调用 Active 引擎；**仅成功**后按该引擎单价计入 `users.budget_spent`
+4. 上游失败不扣费；上游 **401/403** 映射为 **502**
+
+运营侧在 Admin → **Tools → Configuration** 配置；调用记录见 **Logs → Request Logs**（Type 选 **REST tools**，`model_id=tool:web-deep-search`）。
+
+### 响应
+
+```json
+{
+  "data": {
+    "results": [
+      {
+        "title": "…",
+        "url": "https://…",
+        "snippet": "…",
+        "content": "# markdown…"
+      }
+    ],
+    "cost": 0.01
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `results[].content` | 可选；页面正文（deep search 核心字段） |
+| `cost` | 本次扣费；单位随 `BILLING_CURRENCY` |
+
+用量日志 `api_key_request_logs` 中 `model_id` 记为 `tool:web-deep-search`，`provider_id` 为 `octafuse-tools`。
+
+---
+
+## AI Detection（Agent 工具）
+
+协议无关的产品 API，供门户或 Agent 检测文本 AI 生成概率。**不是** OpenAI / Anthropic / Gemini 推理协议的一部分。
+
+计费与上游调用次数解耦：
+
+| 概念 | 计算 |
+|------|------|
+| 上游调用次数 | `ceil(总字数 / driver.segmentMaxChars)`（技术分段，随 Active 引擎变化） |
+| 计费单元数 | `ceil(总字数 / billingUnitChars)`（默认 2000；与引擎无关） |
+| 扣费（用户） | `计费单元数 × charged`（`budget_spent` 仅累加此项） |
+| 供应 / 目录 | 同理分别写 `metered_cost` / `standard_cost` |
+
+换引擎时调整三账本单价即可，价格量纲保持一致。响应**不暴露** Active 引擎名，避免客户端产生引擎耦合；响应体 `cost` 字段仍为本次 **charged** 总额。
+
+### 引擎支持矩阵
+
+多 provider 架构（`AI_DETECTION_CATALOG` + `AI_DETECTION_ACTIVE` + proxy driver 注册表）。当前白名单仅一项：
+
+| Provider | 状态 | 凭证 | 技术分段上限 | 分数 |
+|----------|------|------|--------------|------|
+| `tencent_tms` | 已实现 | `secretId` + `secretKey`（可选 `region` / `bizType`） | 2000 字 | TMS `Score` 0–100 |
+
+新增引擎时扩展白名单、`requiredCredentials` 与 driver 即可；未实现引擎不可设为 Active。
+
+### 请求
+
+```
+POST /v1/tools/ai-detection
+Authorization: Bearer <USER_API_KEY>
+```
+
+### 请求体
+
+```json
+{
+  "text": "待检测正文…"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `text` | 必填；trim 后非空 |
+
+### 行为
+
+1. 校验用户 API Key；额度不足支付预计费用 → **403** `{ "error": "Budget exceeded" }`
+2. 从 Admin `system_config` 读取配置：
+   - `AI_DETECTION_ACTIVE`（白名单当前：`tencent_tms`；须为已实现引擎）
+   - `AI_DETECTION_CATALOG`（JSON：按引擎存可选凭证字段并集 + `metered` / `standard` / `charged`（或兼容 `cost`）+ 可选 `billingUnitChars`）
+   - 默认单价三列均为 **0.01**、默认计费粒度 **2000** 字符，单位随 `BILLING_CURRENCY`
+3. 按 Active 引擎切段并并发检测（并发 10）；字符加权得 `overall_score`（0–100）
+4. **仅成功**后按计费单元数 × 三账本单价写入日志，并仅用 **charged** 扣费；上游失败写 error 日志、**不扣费**
+5. 请求日志不含原文 / excerpt：`requestBody` 仅 `{ total_chars, billing_units }`；`pricing_audit`（v4 `fixed_tool_cost`）含 `unit_prices` / `totals` / `provider` / `billing_units`
+
+运营侧在 Admin → **Tools → Configuration** 配置；调用记录见 **Logs → Request Logs**（Type 选 **REST tools**，`model_id=tool:ai-detection`）。
+
+### 响应
+
+```json
+{
+  "data": {
+    "overall_score": 87,
+    "total_chars": 5321,
+    "segments": [
+      { "index": 0, "chars": 2000, "score": 91, "excerpt": "…" }
+    ],
+    "billing_units": 3,
+    "cost": 0.03
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `overall_score` | 0–100；字符加权 |
+| `segments` | 展示分块（含短 excerpt）；日志侧不含 excerpt |
+| `billing_units` | 计费单元数 |
+| `cost` | 本次扣费；单位随 `BILLING_CURRENCY` |
+
+---
+
+## Tools Pricing（定价只读）
+
+用户 Key 可读各工具单价，供门户费用预估。**不返回** provider 密钥与 Active 引擎名。余额仍从 `GET /v1/me` 获取。
+
+### 请求
+
+```
+GET /v1/tools/pricing
+Authorization: Bearer <USER_API_KEY>
+```
+
+### 响应
+
+```json
+{
+  "data": {
+    "billing_currency": "USD",
+    "tools": [
+      { "id": "web-search", "unit": "request", "cost": 0.001, "metered": 0.001, "standard": 0.001, "charged": 0.001 },
+      { "id": "web-fetch", "unit": "request", "cost": 0.002, "metered": 0.002, "standard": 0.002, "charged": 0.002 },
+      { "id": "web-deep-search", "unit": "request", "cost": 0.01, "metered": 0.01, "standard": 0.01, "charged": 0.01 },
+      { "id": "ai-detection", "unit": "chars", "unit_chars": 2000, "cost": 0.01, "metered": 0.01, "standard": 0.01, "charged": 0.01 }
+    ],
+    "mcp": [
+      { "id": "mcp:deepwiki/ask", "name": "deepwiki__ask", "unit": "request", "cost": 0.01, "metered": 0.01, "standard": 0.01, "charged": 0.01 },
+      { "id": "mcp:tavily/tavily-search", "name": "tavily__tavily-search", "unit": "request", "cost": 0.012, "metered": 0.008, "standard": 0.01, "charged": 0.012 }
+    ]
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `billing_currency` | 与 `system_config.BILLING_CURRENCY` 一致 |
+| `tools[].unit` | `request`（按次）或 `chars`（按字符计费单元） |
+| `tools[].unit_chars` | 仅 `ai-detection`：计费粒度字符数 |
+| `tools[].charged` | Active 引擎用户单价（扣费） |
+| `tools[].metered` / `standard` | 供应成本 / 目录标准单价 |
+| `tools[].cost` | 兼容别名，等于 `charged`；未配置时回退代码默认值 |
+| `mcp` | 已启用的 MCP 工具。迁移 `0030` 尚未执行时为空数组。`id` 为 `mcp:{slug}/{原工具名}`，`name` 为客户端看到的名称 |
+| `mcp[].unit` | 当前固定为 `request`，每次成功调用计 1 单元。`metered` / `standard` / `charged` / `cost` 都是单次调用价格 |
+
+---
+
+## Images（图片生成 / 编辑）
+
+> 入口与路由、模型目录与单价、计费与验收见总入口；各厂商的参数规则见其中链接的厂商文档：[文生图模型（Image Models）](../reference/image-models.md)。
+
+OpenAI 兼容 Images API，供桌面 Agent 的 `generate_image` 等工具调用。鉴权与 Chat 相同（用户 API Key）；模型须配置请求协议为 OpenAI 的路由（上游可以是 OpenAI 透传，也可以经 `volcengine-image`、`dashscope-image-*`、`minimax-image`、`gemini-image` 适配器转换）及有效的 `image_billing_mode`：`token` 模式需在 `pricing_profile.tiers` 配置 Image token 单价，`per_image` 模式需配置 `pricing_profile.image` 按张单价（见 Admin 模型页与 [文生图模型说明](../reference/image-models.md)）。
+
+### 生成
+
+```
+POST /v1/images/generations
+Authorization: Bearer <USER_API_KEY>
+Content-Type: application/json
+```
+
+```json
+{
+  "model": "gpt-image-2",
+  "prompt": "A watercolor book cover of a coastal lighthouse at dusk",
+  "n": 1,
+  "size": "auto",
+  "quality": "auto",
+  "background": "auto"
+}
+```
+
+国内 Seedream（火山方舟）示例（catalog id 与上游同名）：
+
+```json
+{
+  "model": "doubao-seedream-5-0",
+  "prompt": "海边灯塔水彩封面",
+  "n": 1,
+  "size": "2K",
+  "watermark": false
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `model` | 必填；支持 `id:route_group` 后缀 |
+| `prompt` | 必填；最长 4000 字符 |
+| `n` | OpenAI 透传仅允许 **1**。转换适配器按上游放宽：`volcengine-image` 为 1–15（2 及以上打开组图，5.0 pro / flash 只能为 1），`minimax-image` 为 1–9，千问 1–6、万相 1–4。万相官方默认 4，缺省时网关显式下发 1。`gemini-image` 只能为 1 |
+| `size` / `quality` / `background` | 可选；`size` 一般原样转发，取值由上游校验。GPT Image 常用 `auto` / `1024x…`；Seedream 常用 `2K` / `4K`；千问只接受像素串（如 `1024*1024`），万相允许 `1K`/`2K`/`4K`。`minimax-image` 不转发这三个字段，画幅用额外字段 `aspect_ratio`，或同时传 `width` 与 `height`。`gemini-image` 把 `size` 换算成 `imageConfig` 的比例与 `1K`/`2K`/`4K`，不转发 `quality` 与 `background` |
+| `response_format` | 可选。OpenAI 透传仅当调用方显式传入时转发（GPT Image 系列通常直接返回 `b64_json`，且可能不接受该参数）。DashScope 转换默认返回 `data[].url`；显式 `b64_json` 时网关下载 OSS 链接并转 base64，失败降级回 `url` |
+| `watermark` / `sequential_image_generation` / `optimize_prompt_options` | 可选；Seedream 等兼容扩展，**显式传入时透传**；也可由路由 `custom_params` 注入默认值 |
+| `image` | 可选；Seedream **图生图 / 多图融合**用 JSON 字符串或字符串数组（URL / data URL），走本 generations 端点，**不是** multipart `/edits` |
+
+### 编辑（参考图）
+
+```
+POST /v1/images/edits
+Authorization: Bearer <USER_API_KEY>
+Content-Type: multipart/form-data
+```
+
+表单字段：`model`、`prompt`、`n=1`、可选 `size`/`quality`/`background`，以及最多 **5** 个参考图文件（`image/png` \| `image/jpeg` \| `image/webp`，单文件 ≤ 20MB）。
+
+- **1 张**：字段名 `image`
+- **2 张及以上**：每张都用 `image[]`（不要重复标量 `image`，上游 OpenAI 会 400 `Duplicate parameter: 'image'`）
+
+Gateway 入站两种写法都接受（重复 `image` 会收成数组，`image[]` 亦可）。出站打 OpenAI 兼容上游时按上面规则改写。
+
+**必须**使用 `Content-Type: multipart/form-data`（含 boundary）。若客户端误发 `application/json` 或其它类型，Gateway 在读 body 前即返回 400 `Unsupported Content-Type for /v1/images/edits…`。Seedream 图生图请走 generations + JSON `image`，不要用本端点。
+
+### 计费与审计
+
+Image 模型支持两种 `pricing_profile.image_billing_mode`（再乘路由 `charged_factor` / `metered_factor`）：
+
+| 模式 | 最终费用 | `pricing_audit.kind` |
+|------|----------|----------------------|
+| **`token`**（GPT Image / Gemini） | usage 分项 × `$/1M`（对齐 [OpenAI Image Cost](https://platform.openai.com/docs/guides/image-generation)） | `image_tokens` |
+| **`per_image`**（Seedream / GLM / Grok / 阿里云百炼 / MiniMax） | `output_unit × 确认输出张数 + input_unit × 参考图数` | `image_per_image` |
+
+1. **预检额度**：token 模式用 quality×size **估算** tokens；per_image 模式用请求张数 × 单价；均取全候选路由最高 `charged_factor`。预检只决定能不能打上游，**不**等于最终扣费
+2. **成功出图**：token 按 **`usage` 真实分项**；per_image 按 **有效返回图片数**（忽略 usage tokens）
+3. **客户端取消 / Gateway 超时**（请求已发出，合成 504）：token / per_image **均零费用**。合成 504 **不** failover
+4. **明确上游 4xx/5xx、网络合成 502、空结果**：零费用日志
+5. Request log **不**保存 prompt 原文、参考图或 Base64；列含 `billing_kind`、`input_image_count`、`output_image_count`；`raw_usage` / `pricing_audit` 供审计
+6. 须配置对应模式目录价；无合法 mode/价格则不计费。详见 [image-models.md](../reference/image-models.md)
+
+`pricing_profile` 示例（`gpt-image-2` **token**，USD/1M）：
+
+```json
+{
+  "image_billing_mode": "token",
+  "tiers": [{
+    "upto": null,
+    "input_price": 5,
+    "output_price": 0,
+    "cache_read_price": 1.25,
+    "image_input_price": 8,
+    "image_input_cache_price": 2,
+    "image_output_price": 30
+  }]
+}
+```
+
+短 prompt generations 的费用通常由 **image_output** 主导；edits 会额外计入 **image_input**。
+
+`pricing_profile` 示例（Seedream **per_image**，CNY/张）：
+
+```json
+{
+  "image_billing_mode": "per_image",
+  "image": {
+    "default": 0.22
+  }
+}
+```
+
+`uncertain_result_policy` 可以写入 profile，但不影响取消 / 超时的计费，两者都不扣费。
+
+Admin 中为图片模型配置 `output_modalities: ["image"]` 及对应 mode 价目即可。
+
+### MiniMax 生图透传
+
+```text
+POST /minimax/v1/image_generation
+Authorization: Bearer <USER_API_KEY>
+Content-Type: application/json
+```
+
+请求与上游都是 `minimax` + `images.generations`，adapter 必须是 `passthrough`。网关只把 `model` 换成路由上的供应商模型名，返回 MiniMax 原文（`data.image_urls` 或 `data.image_base64`）。文生图和 `subject_reference` 图生图共用这一路径。按成功张数计费。`base_resp.status_code` 非 0 时 body 不变，HTTP 状态按业务码改写。详见 [MiniMax 生图](../architecture/minimax-image.md)。
+
+OpenAI 入口使用适配器 `minimax-image`，调用 `POST /v1/images/generations`。不转发 `size`；`aspect_ratio`、`width`、`height` 有值才原样转发。`response_format=url` 返回 `data[].url`，`b64_json` 返回 `data[].b64_json`。`quality` 和 `background` 不转发。`n` 为 1–9。
+
+### Gemini 生图（OpenAI 入口）
+
+OpenAI SDK 使用适配器 `gemini-image`，调用 `POST /v1/images/generations`，网关转成 Gemini `generateContent`（Gemini API 或 Vertex AI）。`n` 只能为 1，`response_format` 只支持 `b64_json`。`size` 填 `宽x高` 时换算成最接近的 `imageConfig.aspectRatio`，长边决定 `1K` / `2K` / `4K`；也可只填 `512` / `1K` / `2K` / `4K` 或 `auto`。参考图放在 `image`，必须是 base64 data URL。其它 Gemini 参数写成额外字段 `generationConfig`（如 `imageConfig`），网关深度合并。响应是 OpenAI `data[].b64_json`，`usage` 按图片与文本分项给出，计费为 `token` 模式。上游 200 但没有图片时返回 502。要流式或 Gemini 原文，请走 `POST /v1beta/models/{model}:generateContent` / `streamGenerateContent`。详见 [Gemini 原生生图](../architecture/gemini-image.md#openai-入口gemini-image)。
+
+### 火山方舟生图
+
+OpenAI SDK 使用适配器 `volcengine-image`，调用 `POST /v1/images/generations`。`n=1` 生成单图；`n` 为 2–15 时打开组图，`max_images` 等于 `n`。方舟可能返回更少的图片，预检按 `n`，最终按成功张数计费。Seedream 5.0 pro / flash 不支持组图，`n` 只能为 1。
+
+`size` 原样转发，`auto` 交给方舟按模型默认值处理。可用档位和像素范围按模型不同：5.0 pro / flash 为 `1K` / `1.5K` / `2K` 或 92 万–462 万像素；5.0 lite / 4.5 至少 369 万像素（如 `2560x1440`），`1024x1024` 会被拒绝。不确定时用 `2K`，所有型号都支持。
+
+`background` 只转发 `transparent` / `opaque`，仅 5.0 pro / flash 的图生图可用。`output_format` 只接受 `png` / `jpeg`。`response_format` 只支持 `url` 和 `b64_json`。参考图放在 `image`。方舟默认加「AI 生成」水印，不需要时传 `watermark: false`。`quality` 不转发。响应 `data[]` 保留方舟的 `size`、`output_format`（图层拆分还有 `z_index`、`bounding_box` 等），`usage` 原样返回。全部失败时返回上游错误，HTTP 502。这条入口只出 JSON。
+
+原生和流式走透传：
+
+```text
+POST /volcengine/api/v3/images/generations
+Authorization: Bearer <USER_API_KEY>
+Content-Type: application/json
+```
+
+请求与上游都是 `volcengine` + `images.generations`，adapter 必须是 `passthrough`。网关只把 `model` 换成路由上的供应商模型名，返回方舟原文。非流式 JSON 与 `stream: true` 的 SSE 共用这一路径。按 `usage.generated_images` 计费（失败张数不计入）；没有 usage 时按带 `url` 或 `b64_json` 的 `data[]` 计数。组图使用 `sequential_image_generation` 与 `sequential_image_generation_options.max_images`。详见 [火山方舟 Seedream 生图](../architecture/volcengine-image.md)。
+
+---
+
+## 语音合成（Audio Speech / TTS）
+
+OpenAI 兼容语音合成入口，支持完整音频响应与流式输出。鉴权、预算、路由与日志沿用用户 API Key 链路；请求入口为 `openai` + `audio.speech`。
+
+```text
+POST /v1/audio/speech
+Authorization: Bearer <USER_API_KEY>
+Content-Type: application/json
+```
+
+| 字段 | 说明 |
+|------|------|
+| `model` | 必填；支持 `id:route_group` 后缀 |
+| `input` | 必填；合成文本，最多 4096 个字符 |
+| `voice` | 必填；字符串或 `{ "id": "..." }` |
+| `response_format` | 可选；`mp3`（默认）/ `opus` / `aac` / `flac` / `wav` / `pcm` |
+| `speed` | 可选；`0.25`–`4.0`，默认 `1` |
+| `stream_format` | 可选；`audio`（默认）或 `sse` |
+| `instructions` | 可选；风格指令，最多 4096 个字符 |
+
+同协议 OpenAI 上游使用 `passthrough`；转到 DashScope SpeechSynthesizer、Qwen-TTS、DashScope 上的 MiniMax，或 MiniMax 官方 `t2a_v2` 时，必须选择对应的显式 adapter。ElevenLabs 适配器是 `elevenlabs-tts`（见下文「ElevenLabs 文本转语音」）。MiniMax 官方适配器是 `minimax-tts`：`voice` 用 MiniMax `voice_id`，格式限 `mp3` / `pcm` / `flac` / `wav`，语速限 `0.5`–`2`，不支持 `instructions`。非流式返回音频字节；`stream_format=sse` 返回 OpenAI speech SSE。最终字符数采用上游 `extra_info.usage_characters`，缺失时不会用输入长度补算。DashScope TTS 则采用上游 `usage.characters`。
+
+默认 `GET /v1/models` **不含** TTS；列出 TTS 请用 `kind=tts`（`kind=audio` 会同时含 ASR）或 `kind=all`。命中可见 `audio.speech` 路由时，`model_info.inbound` 会包含 `{ "protocol": "openai", "operation": "audio.speech" }`。
+
+```bash
+curl -sS "$GATEWAY_URL/v1/audio/speech" \
+  -H "Authorization: Bearer $USER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"your-tts-model","input":"你好，Octafuse。","voice":"your-voice"}' \
+  --output speech.mp3
+```
+
+### DashScope 同步 ASR HTTP 透传
+
+`qwen-audio-3.0-asr-flash` 也可走原生 JSON，不经过 OpenAI multipart：
+
+```
+POST /dashscope/api/v1/services/aigc/multimodal-generation/generation
+Authorization: Bearer <USER_API_KEY>
+Content-Type: application/json
+```
+
+请求/上游都是 `dashscope` + `audio.transcriptions.multimodal`，adapter 必须是 `passthrough`。网关只替换 `model` 为路由里的供应商模型名，返回上游原生 JSON（`output.text` / `usage.duration`）。契约见 [非实时语音识别](https://help.aliyun.com/zh/model-studio/non-real-time-speech-recognition-for-fun-asr-flash)。Qwen3-ASR 与 Qwen-Audio-3.0 同 URL、不同字段，转换链必须用对应 adapter。
+
+### DashScope 原生实时音频
+
+实时 ASR / TTS 使用 WebSocket 入口：
+
+```text
+# run-task 协议（Paraformer / Fun-ASR / CosyVoice 等）：模型与任务写在 run-task 帧里
+wss://<gateway>/dashscope/api-ws/v1/inference
+# Qwen-Realtime session：模型在查询参数里
+wss://<gateway>/dashscope/api-ws/v1/realtime?model=<gateway-model>
+Authorization: Bearer <USER_API_KEY>
+```
+
+路径与百炼官方一致，官方 SDK 只需把 base 换成网关域名加 `/dashscope`。请求与上游都使用 `dashscope` 协议，事件和二进制音频帧保持原生语义；operation 由入口与 `payload.task` 推断，客户端无需传 `operation`。旧别名 `/v1/dashscope/realtime?model=&operation=` 暂时保留。可用 operation、浏览器子协议鉴权、Node / Workers 运行时差异、Close 码约束与计费见 [DashScope 音频架构](../architecture/dashscope-audio.md)。
+
+### DashScope 语音合成与文件转写透传
+
+| 公开路径 | operation | 说明 |
+|----------|-----------|------|
+| `POST /dashscope/api/v1/services/audio/tts/SpeechSynthesizer` | `audio.speech` / `audio.speech.stream` | CosyVoice 等 SpeechSynthesizer 模型。`X-DashScope-SSE: enable` 为流式，响应保持 DashScope 原文，按 `usage.characters` 计费 |
+| `POST /dashscope/api/v1/services/aigc/multimodal-generation/generation` | `audio.speech.multimodal` | Qwen-TTS 与百炼上的 MiniMax 语音，与同步 ASR、生图共用路径，网关按模型类型分流 |
+| `POST /dashscope/api/v1/services/audio/asr/transcription` | `audio.transcriptions.async` | 提交异步 filetrans 任务，立即返回任务 JSON，不计费 |
+| `GET /dashscope/api/v1/tasks/{taskId}?model=<gateway-model>` | `audio.transcriptions.async` | 查询任务，响应是任务 JSON；任务成功时按结果时长计费 |
+
+请求与上游都是 `dashscope` 和表中的 operation，adapter 必须是 `passthrough`。网关只替换 `model`。OpenAI 客户端改用 `POST /v1/audio/speech` 或 `POST /v1/audio/transcriptions`，并在路由上选择对应的 DashScope 转换适配器。
+
+### MiniMax 同步语音合成透传
+
+```text
+POST /minimax/v1/t2a_v2
+Authorization: Bearer <USER_API_KEY>
+Content-Type: application/json
+```
+
+请求与上游都是 `minimax` + `audio.speech`，adapter 必须是 `passthrough`。非流式 JSON 与 `stream: true` 的 SSE 共用这一路径。网关只替换 `model`。非流式成功响应仍是上游 JSON，音频在 `data.audio`（hex）。计费使用 `extra_info.usage_characters`。`base_resp.status_code` 非 0 时 body 不变，HTTP 状态按业务码改写；SSE 业务错误记入 `stream_error` 且不计费。详见 [MiniMax 音频](../architecture/minimax-audio.md)。
+
+OpenAI 入口使用适配器 `minimax-tts`，调用上面的 `POST /v1/audio/speech`。`voice` 填 MiniMax `voice_id`（例如 `male-qn-qingse`）。非流式响应是音频字节；`stream_format=sse` 是 OpenAI speech 事件。
+
+文件转写透传见下文「MiniMax 文件转写透传」。
+
+### ElevenLabs 文本转语音
+
+```text
+POST /elevenlabs/v1/text-to-speech/{voice_id}
+POST /elevenlabs/v1/text-to-speech/{voice_id}/stream
+POST /elevenlabs/v1/text-to-speech/{voice_id}/with-timestamps
+POST /elevenlabs/v1/text-to-speech/{voice_id}/stream/with-timestamps
+xi-api-key: <USER_API_KEY>        # 也可用 Authorization: Bearer
+Content-Type: application/json
+```
+
+请求与上游都是 `elevenlabs` + `audio.speech`，adapter 必须是 `passthrough`；四个变体共用这一 operation。`model_id` 与 `text` 必填，`model_id` 填 Gateway 模型 ID，网关转发时换成路由上的供应商模型名。`voice_id` 只接受字母、数字、`_`、`-`。`output_format`、`enable_logging`、`optimize_streaming_latency` 作为 query 原样转发。按响应头 `x-character-count` 按字符计费，缺失时按 `text` 长度计。上游 `detail.status=quota_exceeded` 改写为 402，`too_many_concurrent_requests`、`system_busy` 改写为 429，以便故障转移。详见 [ElevenLabs 音频](../architecture/elevenlabs-audio.md)。
+
+OpenAI 入口使用适配器 `elevenlabs-tts`，调用上面的 `POST /v1/audio/speech`。`voice` 填 ElevenLabs `voice_id`；`response_format` 支持 `mp3`、`opus`、`pcm`、`wav`（`wav` 与 `pcm` 为 24 kHz），`aac` 与 `flac` 返回 400；`speed` 范围 `0.7`–`1.2`；`instructions` 返回 400。`voice_settings`、`language_code`、`seed` 等官方字段通过 `extra_body` 传入。`stream_format=sse` 返回 OpenAI speech SSE。
+
+---
+
+## 语音转写（Audio Transcriptions）
+
+OpenAI 兼容 Audio Transcriptions API，供桌面 Agent 语音输入等场景调用。鉴权与 Chat 相同（用户 API Key）；模型须配置请求协议为 **OpenAI** 的路由（上游可以是 OpenAI 透传，也可以经 `dashscope-asr-*`、`minimax-asr-file`、`elevenlabs-asr-file` 等适配器转换），且 `pricing_profile` 含有效的 Audio 计费配置（见下方双模式）。
+
+```
+POST /v1/audio/transcriptions
+Authorization: Bearer <USER_API_KEY>
+Content-Type: multipart/form-data
+```
+
+表单字段：
+
+| 字段 | 说明 |
+|------|------|
+| `model` | 必填；支持 `id:route_group` 后缀 |
+| `file` | 同步转换链必填；音频文件（如 `webm` / `mp3` / `wav` / `ogg` / `m4a`）；Gateway 硬上限约 **25MB** |
+| `file_url` | 异步 filetrans（Qwen3 / Qwen-Audio / Fun-ASR / Paraformer 的 async adapter）必填；公网 HTTP(S)/OSS URL。有 `file_url` 时可不传 `file` |
+| `language` | 可选；ISO-639-1（如 `zh`、`en`） |
+| `response_format` | 可选；`json`（默认）/ `text` / `srt` / `verbose_json` / `vtt` / `diarized_json`（说话人分离模型） |
+| `prompt` / `temperature` | 可选；OpenAI 透传原样转发，`minimax-asr-file` 不转发 |
+
+### 计费与审计（双模式）
+
+由 `pricing_profile.audio_billing_mode` 决定；Admin 保存时禁止与 Image 计费字段混配。请求日志**不**落音频二进制。
+
+| 模式 | `audio_billing_mode` | 扣费权威 | 费用口径 | 日志 |
+|------|----------------------|----------|----------|------|
+| **按秒** | `"per_second"` | 音频时长 | `billable_seconds × price_per_second × charged_factor`（`minimum_seconds` 可选下限） | `billing_kind=audio_per_second`；列 `audio_duration_seconds`；`pricing_audit.kind=audio_per_second` |
+| **按 token** | `"token"` | 上游 `usage`（`type=tokens`） | `(input_tokens × input_price + output_tokens × output_price) / 1M × charged_factor`；单价取 `tiers`（$/1M） | `billing_kind=audio_tokens`；token 数列写入日志；`pricing_audit.kind=audio_tokens`（含 `tokens.input/output/audio/text`） |
+
+**时长**：两种模式都会解析时长（上游 `verbose_json` 的 `duration`，缺失时按文件字节估算），并在 `pricing_audit.duration_source` 标注来源；按秒模式用其计费，token 模式主要用于预检与审计。
+
+Admin 静态预设（`packages/admin/lib/model-presets/openai-audio-asr.json`，与 [Speech to text](https://developers.openai.com/api/docs/guides/speech-to-text) 当前别名一致）：
+
+| model id | 计费模式 | 上游官方价（参考） | Gateway 目录价（USD） |
+|----------|----------|-------------------|----------------------|
+| `whisper-1` | `per_second` | **$0.006 / minute** | `audio.price_per_second = 0.0001`（即 $0.006/min） |
+| `gpt-4o-mini-transcribe` | `token` | **$1.25 / $5** per 1M audio tokens（in/out） | `tiers`: `input_price=1.25`, `output_price=5` |
+| `gpt-4o-transcribe` | `token` | **$2.50 / $10** per 1M | `tiers`: `2.5` / `10` |
+| `gpt-4o-transcribe-diarize` | `token` | 同 `gpt-4o-transcribe` | 同左；支持 `diarized_json` |
+
+不收录日期快照（如 `gpt-4o-mini-transcribe-2025-12-15`）与 Realtime-only 模型（如 `gpt-realtime-whisper`）。
+
+`pricing_profile` 示例——按秒（`whisper-1`）：
+
+```json
+{
+  "audio_billing_mode": "per_second",
+  "audio": {
+    "price_per_second": 0.0001,
+    "minimum_seconds": 1
+  }
+}
+```
+
+`pricing_profile` 示例——按 token（`gpt-4o-mini-transcribe`）：
+
+```json
+{
+  "audio_billing_mode": "token",
+  "tiers": [
+    {
+      "upto": null,
+      "input_price": 1.25,
+      "output_price": 5
+    }
+  ]
+}
+```
+
+示例：
+
+```bash
+curl -sS "$GATEWAY_URL/v1/audio/transcriptions" \
+  -H "Authorization: Bearer $USER_API_KEY" \
+  -F model=whisper-1 \
+  -F file=@recording.webm \
+  -F language=zh \
+  -F response_format=json
+```
+
+默认 `GET /v1/models` **不含** ASR / TTS；列表可用 `kind=asr`（`kind=audio` 会同时含 TTS）或 `kind=all`。命中可见 `audio.transcriptions` 路由时，`model_info.inbound` 会包含 `{ "protocol": "openai", "operation": "audio.transcriptions" }`。Kind 判定规则（有效的 `audio_billing_mode` 优先，其次按模态签名兜底）见 [模型类型](../reference/model-kinds.md)；计费字段见 [admin.md「pricing_profile」](./admin.md#pricing_profile--price_override-契约adminmodelsadminroutes)。
+
+### ElevenLabs 文件转写透传
+
+```text
+POST /elevenlabs/v1/speech-to-text
+xi-api-key: <USER_API_KEY>        # 也可用 Authorization: Bearer
+Content-Type: multipart/form-data
+```
+
+请求与上游都是 `elevenlabs` + `audio.transcriptions`，adapter 必须是 `passthrough`。表单沿用 ElevenLabs 官方字段，`model_id` 必填且填 Gateway 模型 ID；`file` 与 `cloud_storage_url` / `source_url` 二选一。`webhook=true` 返回 400。响应保持上游原文，按上游 `audio_duration_secs` 按秒计费。
+
+### ElevenLabs WebSocket 透传
+
+```text
+GET /elevenlabs/v1/text-to-speech/{voice_id}/stream-input?model_id=<GATEWAY_MODEL_ID>
+GET /elevenlabs/v1/speech-to-text/realtime?model_id=<GATEWAY_MODEL_ID>
+xi-api-key: <USER_API_KEY>        # 也可用 Authorization: Bearer，或浏览器子协议 octafuse-api-key.<key>
+Upgrade: websocket
+```
+
+请求与上游分别是 `elevenlabs` + `audio.speech.realtime` / `audio.transcriptions.realtime`，adapter 必须是 `passthrough`。`model_id` 必填且填 Gateway 模型 ID（可带 `:route_group` 后缀），升级前即完成鉴权、模型类型与余额检查并选路由，失败时 Workers 部署返回 HTTP 状态码，Node 部署以关闭码 1008 关闭连接（错误文本在 close reason）；非 WebSocket 请求返回 426。帧格式沿用 ElevenLabs 官方协议。只支持单路 `stream-input`，不支持 `multi-stream-input`。会话用量由网关按客户端发出的文本字符（TTS）或音频字节折算的秒数（实时转写）估算，只做开始前的余额检查，不在会话中途截断。详见 [ElevenLabs 音频](../architecture/elevenlabs-audio.md#websocket-透传)。
+
+OpenAI 入口使用适配器 `elevenlabs-asr-file`，调用上面的 `POST /v1/audio/transcriptions`。`language` 转为 `language_code`，`prompt` 不转发；`response_format` 支持 `json`、`text`、`verbose_json`、`diarized_json`、`srt`、`vtt`，其中 `diarized_json` 会开启说话人识别，`srt` / `vtt` 由网关生成。`tag_audio_events`、`num_speakers` 等官方字段作为额外表单字段传入。
+
+### MiniMax 文件转写透传
+
+```text
+POST /minimax/v1/speech_to_text
+Authorization: Bearer <USER_API_KEY>
+Content-Type: multipart/form-data
+```
+
+请求与上游都是 `minimax` + `audio.transcriptions`，adapter 必须是 `passthrough`。表单沿用 MiniMax 官方字段，网关只把 `model` 换成路由上的供应商模型名；`language` 可以放在请求头，也可以放在表单里由网关转到请求头。响应保持上游原文，按上游 `duration` 按秒计费。OpenAI 客户端改用 `POST /v1/audio/transcriptions` 和适配器 `minimax-asr-file`。详见 [MiniMax 音频](../architecture/minimax-audio.md)。
+
+---
+
+## Embeddings（向量）
+
+需用户 Key，并由管理员为向量模型配置路由。向量模型的 `output_modalities` 为 `embedding`；默认 `GET /v1/models` 不含向量模型，列表请用 `kind=embedding` 或 `kind=all`。
+
+### OpenAI 兼容
+
+```
+POST /v1/embeddings
+```
+
+```bash
+curl -sS http://localhost:8787/v1/embeddings \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"text-embedding-3-small","input":["hello","world"],"encoding_format":"float"}'
+```
+
+- 请求体原样透传，网关只把 `model` 改写为上游模型名；`dimensions`、`encoding_format` 等字段由上游解释。
+- 路由选路、故障转移、限流与其他 OpenAI 入口一致；可选 `X-Route-Group` 指定路由组。
+- 上游需配置 `openai` 协议并启用 `embeddings` 能力：默认由 Base 派生 `{base}/embeddings`，也可在供应商里覆盖。
+
+### Gemini 原生
+
+```
+POST /v1beta/models/{model}:embedContent
+POST /v1beta/models/{model}:batchEmbedContents
+```
+
+- `embedContent` 若请求体带 `model`，会被改写为 `models/{上游模型名}`；`batchEmbedContents` 会改写每个 `requests[].model`。
+- 上游需配置 `gemini` 协议的 `models.embed` 能力，URL 模板含 `{model}` 与 `{action}`。
+
+### 计费
+
+向量只按输入 token 计费：`input_tokens × input_price × charged_factor`，输出价与缓存价为 0（模型表单中不展示）。用量取自上游响应：OpenAI `usage.prompt_tokens`（缺失时回退 `usage.total_tokens`），Gemini `usageMetadata.promptTokenCount`。上游未返回用量时该请求不计费，并在请求日志里标记为未计费。请求日志的功能标签为 `embedding`。
+
+## 获取当前用户预算状态
+
+获取当前认证用户的预算使用情况。
+
+### 请求
+
+```
+GET /v1/me
+```
+
+### 响应
+
+```json
+{
+  "budget_max": 100.00,
+  "budget_spent": 15.50,
+  "wallet_granted": 20.00,
+  "wallet_spent": 3.00,
+  "wallet_balance": 17.00,
+  "total_remaining": 101.50,
+  "budget_period": "monthly",
+  "budget_reset_at": "2024-02-01T00:00:00.000Z",
+  "billing_currency": "USD",
+  "metadata": {
+    "plan": "pro",
+    "source": "account-service"
+  }
+}
+```
+
+### 字段说明
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `budget_max` | number \| null | 预算上限；`null` 表示无限制 |
+| `budget_spent` | number | 当前周期已消费金额 |
+| `wallet_granted` | number | 累计发放的永久额度 |
+| `wallet_spent` | number | 已从永久额度扣除的累计金额 |
+| `wallet_balance` | number | 永久额度当前余额，即 `wallet_granted − wallet_spent` |
+| `total_remaining` | number \| null | 周期剩余与永久额度余额之和；周期额度不限时返回 `null` |
+| `budget_period` | string | 预算周期: `"none"` \| `"daily"` \| `"weekly"` \| `"monthly"` |
+| `budget_reset_at` | string \| null | 下次预算重置时间 (ISO 8601) |
+| `billing_currency` | string | 计费币种：来自 `system_config.BILLING_CURRENCY` 的 **ISO 4217** 三字码（如 `USD`、`CNY`）；与 `pricing_profile` 单价及本接口预算数值同币；未配置或非法时回退 `CNY` |
+| `metadata` | object \| null | 优先返回 User metadata，并以 Key metadata 回退或补全（由管理端写入） |
+
+### 示例
+
+```bash
+curl http://localhost:8787/v1/me \
+  -H "Authorization: Bearer sk-xxx..."
+```
+
+> 即使额度已用完或 Key / 用户 RPM 已超限，此端点仍然可以访问（两层限流都不计入）。客户端可使用此端点分别显示周期额度、永久额度和总剩余额度。本接口**不返回** `rate_limit` 配置，限流由管理端设置。
+
+---
+
+## 注意事项
+
+### 预算控制
+
+当 `budget_max` 非空且“周期剩余 + 永久余额”小于等于 0 时，请求会被拒绝并返回 **403** `Budget exceeded`；周期额度用尽但永久余额仍为正时可以继续请求。周期性套餐使用 `budget_period` 为 `daily` / `weekly` / `monthly` 等并由 `budget_reset_at` 驱动重置；购买额度、注册赠额等永久余额通过 Admin `POST /api/admin/users/:id/wallet/credit` 增减。`budget_period = 'none'` 仅关闭周期池的自动重置，不会自动转为永久额度。
+
+### 请求限流
+
+若 Key 或用户配置了 `rate_limit.rpm`，超限返回 **429** `gateway.rate_limited` 与 `Retry-After`。`GET /v1/me` 与 `GET /v1/models` 不计次；详见上文「请求限流」。
+
+### 定价模型
+
+币种由 **`system_config.BILLING_CURRENCY`** 声明（管理后台 **Gateway Config** 或迁移种子默认 `CNY`）。`pricing_profile` 中的单价与 `users` 的预算字段均按该币种计量。
+
+LLM 及 token 模式的价格以每百万 token 为单位（per-million-token pricing）：
+
+```
+费用 = (常规输入 * input_price
+     + 缓存读取 * cache_read_price
+     + 缓存写入 * cache_write_price
+     + 输出 * output_price) / 1,000,000
+```
+
+- `cache_read_price` 和 `cache_write_price` 默认等于 `input_price`
+- Images 还支持 `per_image` 按张计价，Audio 支持 `per_second` 按时长或 `token` 计价，Agent Tools 使用固定按次单价；分别见上文对应章节。
+- 路由 **`price_override`** 以有效期内的 **`provider_factor`** × **`charged_factor` / `metered_factor`**（及可选分时 **`schedule`**，窗口可带 ISO `days`；`schedule.provider` 与另外两侧共用 `mode`）相对官方当刻价计费。`standard_cost` 不乘 `provider_factor`。嵌套 `metered`/`charged` tiers 忽略。
+- 路由级 **`route_group`** 会写入 `api_key_request_logs` 快照。
+  - **`standard_cost`（官方当刻目录价）**：按当前计费模式从 `models.pricing_profile` 选档后再乘模型官方时段倍率，不乘路由倍率
+  - **`metered_cost`（供应成本）** / **`charged_cost`（用户扣费）**：官方当刻价 × 路由有效倍率（无 `schedule.mode` 时叠乘；`override` 时窗内用窗口 factor）。若用户对该目录模型配置了用户计费倍率，再按 `USER_CHARGED_COST_FACTOR_MODE`（`multiply` / `min`）合成最终用户扣费；供应成本与官方当刻价不变。详见 `docs/developers/reference/streaming-billing.md`
+- `users.budget_spent` 仅按最终 `charged_cost` 累加
+
+### 使用量追踪
+
+每次请求会记录到 `api_key_request_logs`，主要包括：
+
+- Token 使用量（输入/输出/缓存读取/缓存写入/推理等）
+- `metered_cost` / `standard_cost` / `charged_cost`（目录选档 × 官方时段得到 `standard_cost`，再 × 路由倍率；用户扣费再可选乘用户计费倍率；见上）
+- `route_group`（请求时选用的路由快照）
+- `request_protocol` / `request_operation` 与 `upstream_protocol` / `upstream_operation`
+- `model_surface_id`、`route_pool_id`、`route_target_id`、`adapter`、`route_trace`
+- 延迟、状态（success/error/incomplete/cancelled 等）
+- 原始 usage（`raw_usage`）
+
+### 提供商故障转移
+
+同一 Request Surface 指向一个 Route Pool，Pool 内支持多条 **model_routes** Target（每条指向一个 Provider；**一个 Provider = 一把 `api_key`**）。调度由 `failoverDispatch` + `buildRouteAttemptPlan` 完成；拓扑见 [route-topology.md](../architecture/route-topology.md)，完整分支与场景表见 [proxy-request-lifecycle.md](../architecture/proxy-request-lifecycle.md)。
+
+**排序与 failover**：
+
+- **层**：按 `model_routes.priority` **降序**（数字越大越先试）。
+- **同层**：按生效策略排序（默认 **`hash_affinity`**：加权 Rendezvous，利于 prompt cache；另有 `weighted_random` / `weight_priority` / `weighted_round_robin`），权重为 `model_routes.weight`。
+- **跳过**：`providers.status = disabled`、无 `api_key`，或处于 **provider 熔断** 的候选不参与本次 attempt。
+- **全部不可用**（均熔断）：网关直接返回 **429**，响应体为 `{ "error": { "code": "upstream_capacity_exhausted", ... } }`，并带 `Retry-After`；**不调用上游**。
+- **有可试路由时**：按序打上游；可重试失败则换下一 Provider；全部 attempt 失败则返回**最后一次**上游响应。
+
+**可重试并换 Provider**：上游 `429`、`5xx`、`401`、`402`（余额 / 额度用尽）、`403`、网络/`fetch` 失败（524 / fetch 仅同次 failover，不跨请求熔断）。熔断按 **`providers.id`**：429 优先读 `Retry-After` 或递增退避；401/402/403 约 **5min**；普通 5xx 连续 3 次后约 10s。
+
+**User+model 熔断**（与 provider 熔断独立，按 `userId + modelId`，退避 **20s → 1min → 3min → 5min → 10min**；见 [proxy-request-lifecycle.md](../architecture/proxy-request-lifecycle.md) §2.2）：
+
+- **敏感内容**（上游错误文案命中内容安全关键词）：chat / messages / gemini / images / audio **均**触发；短路 **429** `circuit.sensitive_content`。
+- **普通上游 400**：chat / messages / gemini 触发；短路 **400** `circuit.client_error`（回放原文）。**`/v1/images/*`、`/v1/audio/transcriptions` 不记、不短路**普通 400，便于客户端修正尺寸/格式等后立即重试。
+
+**不重试**（立即返回）：`400`、`404` 等请求本身错误；Images 客户端取消 / Gateway 超时合成的 504。
+
+**策略配置**（运维侧，对客户端透明）：Route Pool 可用 `route_pools.strategy` 精确覆盖；其后依次解析 `models.route_policy` 与全局 `system_config.ROUTE_STRATEGY`。解析顺序见 [route-strategies.md](../reference/route-strategies.md)。
+
+用量日志会写入最终选用（或最后失败）的 Surface / Pool / Target，以及 **`provider_key_id`**（= provider id）、**`provider_key_label`**（= provider name）、**`provider_key_fingerprint`**（密钥指纹，不含明文）。
+
+### Route 默认参数合并
+
+<a id="route-默认参数合并"></a>
+
+`model_routes` 支持 route 级默认参数字段 **`custom_params`**（JSON 对象字符串）。落库形状为信封：
+
+```json
+{
+  "headers": {
+    "HTTP-Referer": "https://example.com",
+    "X-Title": "My App"
+  },
+  "body": {
+    "thinking": { "type": "enabled", "clear_thinking": false },
+    "stream": true
+  },
+  "force_override": {
+    "headers": true,
+    "body": true
+  }
+}
+```
+
+- 空配置为列值 `NULL`
+- 可只有 `headers`、只有 `body`，或带上 `force_override` 的一侧 / 两侧
+- **`force_override` 及其子键仅在为 true 时写入**；缺省 = 该侧客户端同名值优先
+- 历史扁平对象（顶层除 `headers` 外即请求体）运行时仍可读，两侧强制覆盖都视为关；下次在管理后台保存时会规范成信封
+
+网关在转发到上游前会进行两层合并。默认优先级从低到高：
+
+1. `custom_params.body`（旧扁平则去掉保留键 `headers` 后的其余键）
+2. 用户请求体
+
+信封 **`force_override.body`: true** 后，同名键改为路由覆盖客户端；只在一侧出现的键仍会保留（例如客户端的 `messages`）。**`force_override.headers`** 只作用于路由已配置的 HTTP 头，与请求体开关独立。
+
+合并规则：
+
+- 对象：递归深度合并
+- 数组：赢家一侧的数组整体替换
+- 标量 / `null`：以赢家为准
+- `model` 始终由 route 的 `provider_model_name` 强制覆盖
+
+OpenAI 生图、语音合成和转写入口走转换适配器时，用户请求体先由适配器改写成上游结构，客户端未被入口解析的字段再作为额外字段合并；完整顺序和受保护路径见 [OpenAI 入口的额外字段](../architecture/adapters-and-drivers.md#openai-入口的额外字段)。
+
+示例（`model_routes.custom_params` 列中存放的 JSON 对象；OpenAI 风格信封）：
+
+```json
+{
+  "headers": {
+    "HTTP-Referer": "https://example.com",
+    "X-Title": "My App"
+  },
+  "body": {
+    "temperature": 0.7,
+    "response_format": { "type": "json_object" },
+    "provider_options": { "foo": "bar" }
+  }
+}
+```
+
+如果用户请求：
+
+```json
+{
+  "model": "gpt-4.1",
+  "messages": [{ "role": "user", "content": "hi" }],
+  "temperature": 0.2
+}
+```
+
+则默认情况下最终上游请求中的 `temperature` 为 `0.2`（用户覆盖默认），`provider_options` 会保留。若该路由 `force_override.body` 为 true，则 `temperature` 为 `0.7`，`messages` 仍来自客户端。
+
+**`headers`** 是上游 **HTTP 头**，不是请求体字段：转发前会从 JSON 中剥离，并合并到出站请求头。仅处理路由里配置过的头名：默认客户端同名请求头优先；`force_override.headers` 为 true 后改为路由值优先。未在路由中配置的客户端头不会转发到上游。网关写入的鉴权头（`Authorization` / `x-api-key` / `x-goog-api-key`）、`Content-Type` 与 hop-by-hop 头不可被 `headers` 或客户端覆盖；其余键（如 `HTTP-Referer`、`anthropic-version`）可以追加或覆盖驱动默认值。`headers` 缺省或为 `{}` 时行为与改造前相同。
+
+各厂商 `thinking` / `reasoning` / `reasoning_effort` 等字段的 JSON 形态见 **[渠道模型思考参数配置说明](../reference/provider-thinking-configs.md)**。在 Route 的 `custom_params.body` 中写入默认值后，客户端未传该字段时会合并进上游请求；未开启该侧强制覆盖时，客户端显式传入以客户端为准。
+
+### Provider 级默认参数（可选的下界）
+
+<a id="provider-级默认参数"></a>
+
+`providers` 支持一份可选的 **Provider 级** `custom_params`（JSON 对象字符串），按**上游协议**分组：
+
+```json
+{
+  "openai": {
+    "headers": { "HTTP-Referer": "https://example.com", "X-Title": "My App" },
+    "body": { "max_tokens": 4096 }
+  },
+  "gemini": {
+    "body": { "generationConfig": { "maxOutputTokens": 8192 } }
+  }
+}
+```
+
+- 每个分组的 `headers` / `body` 形状与上面 Route 级信封里的同名字段一致（受保护头同样不可配置）。
+- Provider 层**没有** `force_override`；强制覆盖仍只能在 Route 上配置。
+- 这是该 Provider 下**所有** Route 的默认值下界：Route 不配置同一字段时自动继承 Provider 的值；Route 配置了就覆盖 Provider。每条 Route 只会用到 Provider 配置里与自己 `upstream_protocol` 一致的那个分组，协议不匹配的分组不生效。
+
+合并发生在 Route 的「有效参数」生成阶段，先于本节前面描述的「Route 默认参数合并」，因此下游行为完全一致，只是多了一层更低优先级的默认值：
+
+```text
+请求头：协议默认头 < Provider.headers < Route.headers < 客户端头（Route 未开 force_override.headers 时）
+请求体：适配器默认 < Provider.body  < Route.body  < 客户端同名字段（Route 未开 force_override.body 时）
+```
+
+**`force_override.body` 为 true 时，整份合并后的有效 body（包含其中的 Provider 默认值）一起对客户端生效强制覆盖**，不是只强制 Route 自己配置的那几个键——例如 Provider 配了 `max_tokens: 4096`、Route 只对 `temperature` 打开了 `force_override.body`，客户端传 `max_tokens: 100` 时最终仍是 `4096` 生效。
+
+Provider 未配置 `custom_params`，或某协议分组为空时，行为与改造前完全一致。原生透传入口（DashScope / MiniMax / ElevenLabs / Volcengine 的直连路径）不合并 body 默认值（仍只替换 `model`），但 headers 会按上面的优先级正常合并，因此配置了 Provider 级 headers 后，这些入口的实际上游请求头也会相应变化。

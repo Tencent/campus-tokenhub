@@ -1,0 +1,88 @@
+/*
+ * Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+ * This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+ */
+
+import type { UpstreamProtocol } from '../upstream-protocol';
+
+/**
+ * 共享类型：仓储与插入语句构造共用。
+ * `pricing_audit` 的 JSON 形状见 `pricing-audit.ts`。
+ */
+export type InsertRequestLogParams = {
+	id: string;
+	/**
+	 * 显式创建时间（ISO 字符串）。缺省时由调用处取当前时刻。
+	 * 正文旁路表 `request_content.created_at` 必须复用同一个值，否则复合主键点查会因毫秒差异跨分区落空。
+	 * **仅 PostgreSQL 实现消费该字段**；D1 / MySQL 仍用列默认值，正文捕获目前也只在这些驱动之外启用。
+	 */
+	createdAt?: string | null;
+	userId: string | null;
+	/** 走 `sk-` 用户 Key 时为 Key id；走 `oat_` 访问令牌（MCP）时为 null */
+	apiKeyId: string | null;
+	/** 走 `oat_` 访问令牌时为令牌 id；走用户 Key 时为 null */
+	oauthAccessTokenId?: string | null;
+	userEmail: string | null;
+	modelId: string;
+	providerId: string;
+	providerModelName: string | null;
+	modelName: string | null;
+	providerName: string | null;
+	requestBody: string | null;
+	upstreamRequestBody: string | null;
+	requestProtocol: UpstreamProtocol;
+	requestOperation?: string | null;
+	upstreamProtocol: UpstreamProtocol;
+	upstreamOperation?: string | null;
+	modelSurfaceId?: string | null;
+	routePoolId?: string | null;
+	routeTargetId?: string | null;
+	adapter?: string | null;
+	routeTrace?: string | null;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	reasoningTokens: number;
+	totalTokens: number;
+	meteredCost: number;
+	standardCost: number;
+	chargedCost: number;
+	/** 本次从永久池扣掉的部分；缺省 0 */
+	chargedWalletCost?: number;
+	routeGroup: string;
+	status: 'success' | 'error' | 'incomplete' | 'cancelled';
+	latencyMs: number | null;
+	gatewayOverheadMs?: number | null;
+	upstreamResponseMs?: number | null;
+	finalUpstreamHeadersMs?: number | null;
+	firstReasoningTokenMs?: number | null;
+	firstTokenMs?: number | null;
+	streamDurationMs?: number | null;
+	upstreamAttemptCount?: number | null;
+	upstreamFailoverCount?: number | null;
+	timingMetadata?: string | null;
+	errorMessage: string | null;
+	rawUsage: string | null;
+	/** 计费审计 JSON 字符串；与 `RequestLogRow.pricing_audit` / `pricing-audit.ts` 对齐 */
+	pricingAudit?: string | null;
+	providerKeyId?: string | null;
+	providerKeyLabel?: string | null;
+	providerKeyFingerprint?: string | null;
+	/** 上游响应头 request id（传输层追踪句柄） */
+	upstreamRequestId?: string | null;
+	/** 上游响应 body message id（应用层生成结果 id：chatcmpl-* / msg_* / responseId） */
+	upstreamMessageId?: string | null;
+	/** 计费种类：`image_tokens` | `image_per_image` | `audio_per_second` | `audio_tokens` | `audio_per_character` */
+	billingKind?: string | null;
+	/** 按张计费：参考图张数 */
+	inputImageCount?: number;
+	/** 按张计费：生成图张数 */
+	outputImageCount?: number;
+	/** 音频转写：计费时长（秒） */
+	audioDurationSeconds?: number | null;
+	/** TTS：上游返回的有效计费字符数 */
+	audioCharacters?: number | null;
+	/** 请求打到的入口 Host（只记录，不做准入） */
+	ingressHost?: string | null;
+};

@@ -1,0 +1,44 @@
+node_modules/
+.local-stack/
+# local-stack 源码入库；仅排除本地运行时数据（Postgres 数据目录、日志、凭证）
+local-stack/octafuse-pgdata/
+local-stack/logs/
+local-stack/.env.local
+# 网关构建产物（由流水线/本地 build 生成，不入库）
+local-stack/octafuse-gateway/packages/admin/ui-dist/
+local-stack/octafuse-gateway/packages/admin/node-server-dist/
+.next/
+out/
+.env
+.env.local
+# 环境文件的手工备份（换密钥时的 .bak-security 等）：一律不入库，
+# 它们含有轮换前的旧口令/旧密钥，进了版本库等于把历史凭证一起提交
+.env.*.bak*
+.env.bak*
+
+# 本地一次性运维 / 验收脚本：只在排障机上用，不随交付包分发给学校
+scripts/verify-security-fixes.sh
+scripts/session-secret-preflight.sh
+# 本机 compose 的本地覆盖（npm run env:local|lan 生成）：含 localhost 地址与 Cookie 开关，
+# 不入库，部署机上不存在时 compose 自动忽略
+docker-compose.override.yml
+# 本地联调说明：含网关默认口令，不入库
+docs/local-dev.md
+*.log
+.DS_Store
+next-env.d.ts
+tsconfig.tsbuildinfo
+coverage/
+# 本地调试 / 打包产物
+.playwright-mcp/
+wx-login-qr.png
+/campus-tokenhub-tokenhub-deploy-*.zip
+# 本地源码打包快照，仅本地留档
+/campus-tokenhub-source-*.zip
+# 设计稿截图/PDF 等大体积素材，仅本地留档
+openspec/changes/*/design-assets/
+# 本地视觉走查截图（仅本地留档，不入库）
+.tmp-evidence/
+
+# 成员账号申请单（本地运行产生）
+/.data/

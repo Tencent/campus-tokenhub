@@ -1,0 +1,85 @@
+# 快速开始
+
+目标：用 **Cloudflare 路径**（本地 D1 → 上云）跑起代理服务（Proxy）与管理后台（Admin），完成一次健康检查，并知道下一步去哪里配置。
+
+个人与小流量通常可在 Cloudflare Workers / D1 **免费额度**内完成部署与日常使用。不用 Cloudflare 时，见 [operators/deployment/](../operators/deployment/)（含 [Docker](../operators/deployment/docker.md)）。
+
+```bash
+git clone https://github.com/OctaFuse/octafuse-gateway.git
+cd octafuse-gateway
+```
+
+## 1. 本机启动（本地 D1）
+
+前置：Node.js 20+、npm。无需 `wrangler login`。
+
+```bash
+npm install
+npm run db:migrate
+npm run dev:proxy
+```
+
+另开一个终端：
+
+```bash
+npm run dev:admin
+```
+
+| 服务 | 地址 / 位置 |
+|------|-------------|
+| 代理服务 Worker | `http://127.0.0.1:8787` |
+| 管理后台 preview | `http://127.0.0.1:8789` |
+| 控制台登录 | `admin` / `admin`（本地默认；首次 `dev:admin` 会自动生成 `packages/admin/.dev.vars`） |
+| D1 本地状态 | `./.wrangler/state` |
+| 管理 API Bearer | 登录后台后在 **系统集成 → 集成密钥** 创建（管理 API 使用，不是网页密码） |
+
+## 2. 部署到 Cloudflare
+
+把代理服务 + 管理后台 + 共享 D1 部署到你自己的 Cloudflare 账号。前置：Cloudflare 账号、`npx wrangler login`。
+
+```bash
+npm install
+npx wrangler login
+npm run bootstrap:cloudflare
+```
+
+完成后按终端提示核对 `GATEWAY_URL` / `GATEWAY_MASTER_URL`，并用 `GET $GATEWAY_URL/health` 做健康检查。
+
+完整说明：[operators/deployment/cloudflare-quickstart.md](../operators/deployment/cloudflare-quickstart.md)。运维与 Workers Builds：[operators/deployment/cloudflare.md](../operators/deployment/cloudflare.md)。
+
+## 3. 打开管理后台后配置
+
+1. 添加或导入供应商（Provider），并填入真实上游 API Key。
+2. 添加或导入模型（Model），并在路由（Routes）中选择匹配的协议适配器，创建或启用对应的请求入口（Request Surface）→ 路由池（Route Pool）→ 上游目标（Upstream Target）。
+3. 先在调试台（Playground）验证单条上游路由，再在模拟器（Simulator）验证真实鉴权、路由、计费和日志。
+4. 创建用户及用户 API Key；需要订阅和加购并存时，分别配置周期额度与永久额度。
+5. 用用户 Key 调用代理服务。
+
+示例请求（本地把主机换成 `127.0.0.1:8787`；已上云则换成你的代理服务 URL）：
+
+```bash
+curl -sS http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"your-route-model","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+如果模型已配置 Responses 请求入口，也可以调用 `/v1/responses` 并发送 `input` 请求体；完整示例见 [connect-clients.md](./connect-clients.md)。
+
+配置细节见 [configuration.md](./configuration.md)；客户端接入见 [connect-clients.md](./connect-clients.md)。
+
+## 生产前必须改的默认值
+
+- 修改管理后台登录密码（本地默认 `admin` / `admin` **仅本机**；上云用 bootstrap / Worker Secret 设强密码）。
+- 登录后台为外部集成创建具名、最小权限的 Admin API Key；升级环境确认切换完成后轮换或吊销 `legacy-master`。
+- 为供应商 API Key、数据库连接串、管理后台密码和 Cloudflare 凭证使用部署平台的 secret / env 管理能力。
+
+敏感信息规则见 [CONVENTIONS.md](../CONVENTIONS.md)。
+
+## 其它部署路径
+
+| 场景 | 文档 |
+|------|------|
+| Docker / Postgres / MySQL 自托管 | [operators/deployment/docker.md](../operators/deployment/docker.md) |
+| Zeabur 等容器平台 | [operators/deployment/zeabur.md](../operators/deployment/zeabur.md) |
+| 部署模式总览 | [operators/deployment/README.md](../operators/deployment/README.md) |

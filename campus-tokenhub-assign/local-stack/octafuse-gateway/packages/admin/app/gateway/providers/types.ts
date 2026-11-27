@@ -1,0 +1,275 @@
+import type { GatewayProvider } from '@/lib/types';
+import type {
+	ProviderEndpointCapability,
+	ProviderEndpointsMap,
+} from '@octafuse/core/provider-endpoints';
+import type { GeminiUpstreamAuthScheme } from '@octafuse/core/gemini-upstream-url';
+import type { UpstreamProtocol } from '@octafuse/core/upstream-protocol';
+
+/** 表单鉴权：`auto` 表示省略 `endpoints.gemini.auth`，运行时默认 `query-key`。 */
+export type GeminiAuthFormMode = 'auto' | GeminiUpstreamAuthScheme;
+
+/** 卡片上紧凑展示的能力标签（OpenAI images.* 合并为 images；audio.transcriptions → audio）。 */
+export type ProviderCapabilityBadge =
+	| 'chat'
+	| 'responses'
+	| 'images'
+	| 'audio'
+	| 'embeddings'
+	| 'messages'
+	| 'modelsGenerate'
+	| 'modelsEmbed'
+	| 'generateContent'
+	| 'streamGenerateContent';
+
+/** `GET /admin/providers/import/catalog` */
+export type ProviderImportCatalogRow = {
+	id: string;
+	name: string;
+	vendor_key: string;
+	icon_key: string;
+	vendor_label: string;
+	protocols: UpstreamProtocol[];
+	endpoints: string | null;
+	description: string | null;
+	labels?: {
+		en: { name: string; description: string };
+		zh: { name: string; description: string };
+		ja: { name: string; description: string };
+		ko: { name: string; description: string };
+	};
+	links?: {
+		platform?: string;
+		api_keys?: string;
+		referral?: string;
+	};
+};
+
+export type ProviderProtocolSummary = {
+	key: UpstreamProtocol;
+	label: string;
+	baseUrl: string | null;
+	overrideCount: number;
+	/** 与 runtime 一致的已配置 capability（完整 key）。 */
+	capabilities: ProviderEndpointCapability[];
+	/** 卡片紧凑标签（images.* → images）。 */
+	badges: ProviderCapabilityBadge[];
+	endpoints: Array<{
+		capability: ProviderEndpointCapability;
+		url: string;
+		source: 'base' | 'override';
+	}>;
+};
+
+/** Preserved when legacy per-action Gemini URLs cannot safely collapse into one `{action}` template. */
+export type GeminiLegacyPerActionEndpoints = {
+	generateContent: string;
+	streamGenerateContent: string;
+};
+
+/** 单协议表单；模式、能力选择与草稿标记仅用于编辑器，不写入 API。 */
+export type ProtocolEndpointForm = {
+	mode?: 'all' | 'partial';
+	/** 未设置时从已有完整端点推断；取消勾选保留 URL 草稿但不提交。 */
+	selectedCapabilities?: ProviderEndpointCapability[];
+	base: string;
+	chat: string;
+	responses: string;
+	images_generations: string;
+	images_generations_multimodal: string;
+	images_edits: string;
+	/** OpenAI `embeddings` capability URL override. */
+	embeddings: string;
+	audio_transcriptions: string;
+	audio_transcriptions_multimodal: string;
+	audio_transcriptions_tasks: string;
+	audio_speech: string;
+	/** ElevenLabs `audio.speech.realtime`（`wss://…/text-to-speech/{voice_id}/stream-input`）。 */
+	audio_speech_realtime: string;
+	/** ElevenLabs `audio.transcriptions.realtime`（`wss://…/speech-to-text/realtime`）。 */
+	audio_transcriptions_realtime: string;
+	audio_speech_multimodal: string;
+	audio_realtime_inference: string;
+	audio_realtime_session: string;
+	audio_hotwords: string;
+	audio_voices: string;
+	messages: string;
+	/** Canonical Gemini family override (`models.generate`, must include `{model}` + `{action}`). */
+	modelsGenerate: string;
+	/** Gemini `models.embed` override (must include `{model}` + `{action}`). */
+	modelsEmbed: string;
+	/** @deprecated Prefer modelsGenerate; kept for display of uncollapsed legacy rows. */
+	generateContent: string;
+	/** @deprecated Prefer modelsGenerate; kept for display of uncollapsed legacy rows. */
+	streamGenerateContent: string;
+	/** When set, save must round-trip these keys unchanged (do not invent a merged template). */
+	legacyPerAction?: GeminiLegacyPerActionEndpoints | null;
+	/** Gemini only. `auto` omits `auth` on save. */
+	auth: GeminiAuthFormMode;
+};
+
+/**
+ * 单协议的 Provider 级默认 `custom_params` 表单状态。没有 `force_override`（该字段仍只属于 Route）。
+ * `bodyText` 是 body 的 JSON 文本；空字符串表示未配置，保存前需校验能否 `JSON.parse`。
+ */
+export type ProtocolCustomParamsForm = {
+	headers: Array<{ name: string; value: string }>;
+	bodyText: string;
+};
+
+export const EMPTY_PROTOCOL_CUSTOM_PARAMS_FORM: ProtocolCustomParamsForm = {
+	headers: [],
+	bodyText: '',
+};
+
+export type ProviderFormData = {
+	id: string;
+	name: string;
+	/** 导入模板英文名、`__custom__`，或空字符串（尚未分类）。 */
+	kind: string;
+	/** 创建必填；编辑时显式清空并保存 = 清空密钥 */
+	api_key: string;
+	/** `active` | `disabled` */
+	status: 'active' | 'disabled';
+	openai: ProtocolEndpointForm;
+	anthropic: ProtocolEndpointForm;
+	gemini: ProtocolEndpointForm;
+	dashscope: ProtocolEndpointForm;
+	minimax: ProtocolEndpointForm;
+	volcengine: ProtocolEndpointForm;
+	elevenlabs: ProtocolEndpointForm;
+	/** 按上游协议分组的默认 `custom_params` 表单状态；缺失的协议键 = 未配置。 */
+	customParams: Partial<Record<UpstreamProtocol, ProtocolCustomParamsForm>>;
+	note: string;
+};
+
+export type ProviderImportResult = {
+	created: number;
+	failed: Array<{ id: string; message: string }>;
+};
+
+export const EMPTY_PROTOCOL_FORM: ProtocolEndpointForm = {
+	base: '',
+	chat: '',
+	responses: '',
+	images_generations: '',
+	images_generations_multimodal: '',
+	images_edits: '',
+	embeddings: '',
+	audio_transcriptions: '',
+	audio_transcriptions_multimodal: '',
+	audio_transcriptions_tasks: '',
+	audio_speech: '',
+	audio_speech_realtime: '',
+	audio_transcriptions_realtime: '',
+	audio_speech_multimodal: '',
+	audio_realtime_inference: '',
+	audio_realtime_session: '',
+	audio_hotwords: '',
+	audio_voices: '',
+	messages: '',
+	modelsGenerate: '',
+	modelsEmbed: '',
+	generateContent: '',
+	streamGenerateContent: '',
+	legacyPerAction: null,
+	auth: 'auto',
+};
+
+export const EMPTY_PROVIDER_FORM: ProviderFormData = {
+	id: '',
+	name: '',
+	kind: '',
+	api_key: '',
+	status: 'disabled',
+	openai: { ...EMPTY_PROTOCOL_FORM },
+	anthropic: { ...EMPTY_PROTOCOL_FORM },
+	gemini: { ...EMPTY_PROTOCOL_FORM },
+	dashscope: { ...EMPTY_PROTOCOL_FORM },
+	minimax: { ...EMPTY_PROTOCOL_FORM },
+	volcengine: { ...EMPTY_PROTOCOL_FORM },
+	elevenlabs: { ...EMPTY_PROTOCOL_FORM },
+	customParams: {},
+	note: '',
+};
+
+export type { GatewayProvider, ProviderEndpointsMap };
+
+/** Providers 页列表筛选（URL `?filter=`）。 */
+export type ProviderListFilter =
+	| 'all'
+	| 'active'
+	| 'disabled'
+	| 'pending'
+	| 'no_key'
+	| 'outdated'
+	| 'openai'
+	| 'anthropic'
+	| 'gemini'
+	| 'dashscope'
+	| 'minimax'
+	| 'volcengine'
+	| 'elevenlabs';
+
+export const PROVIDER_PROTOCOL_FILTERS: readonly ProviderListFilter[] = [
+	'openai',
+	'anthropic',
+	'gemini',
+	'dashscope',
+	'minimax',
+	'volcengine',
+	'elevenlabs',
+];
+
+export const DEFAULT_PROVIDER_LIST_FILTER: ProviderListFilter = 'all';
+
+export const PROVIDER_LIST_FILTERS: readonly ProviderListFilter[] = [
+	'all',
+	'active',
+	'disabled',
+	'pending',
+	'no_key',
+	'outdated',
+	'openai',
+	'anthropic',
+	'gemini',
+	'dashscope',
+	'minimax',
+	'volcengine',
+	'elevenlabs',
+] as const;
+
+export function parseProviderListFilterParam(
+	raw: string | null
+): ProviderListFilter {
+	if (!raw) return DEFAULT_PROVIDER_LIST_FILTER;
+	return (PROVIDER_LIST_FILTERS as readonly string[]).includes(raw)
+		? (raw as ProviderListFilter)
+		: DEFAULT_PROVIDER_LIST_FILTER;
+}
+
+/** 卡片状态行：密钥 / 启停摘要。 */
+export type ProviderKeyStatusKind =
+	| 'pending'
+	| 'disabled'
+	| 'no_key'
+	| 'key_set';
+
+/** Preserve legacy ?filter=openai links while separating status from protocol. */
+export function parseProviderListFilters(
+	filter: string | null,
+	protocol: string | null
+) {
+	const legacy = parseProviderListFilterParam(filter);
+	const parsedProtocol = parseProviderListFilterParam(protocol);
+	return {
+		status: PROVIDER_PROTOCOL_FILTERS.includes(legacy)
+			? ('all' as const)
+			: legacy,
+		protocol: PROVIDER_PROTOCOL_FILTERS.includes(parsedProtocol)
+			? parsedProtocol
+			: PROVIDER_PROTOCOL_FILTERS.includes(legacy)
+			? legacy
+			: ('all' as const),
+	};
+}

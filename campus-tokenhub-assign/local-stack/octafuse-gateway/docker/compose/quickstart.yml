@@ -1,0 +1,124 @@
+# Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+# This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+
+# Local quickstart: Postgres + one-shot schema migration + proxy + admin.
+# Requires Docker Compose v2.20+ (`depends_on` with `service_completed_successfully`).
+#
+# 必须先提供两个口令环境变量（缺失时 compose 直接报错，文件里不留任何默认口令）：
+#   POSTGRES_PASSWORD   数据库口令（用户名 / 库名见 POSTGRES_USER / POSTGRES_DB）
+#   ADMIN_PASSWORD      管理台登录口令
+# 生成示例：export POSTGRES_PASSWORD=$(openssl rand -hex 24) && \
+#           export ADMIN_PASSWORD=$(openssl rand -hex 24)
+#
+#   docker compose -f docker/compose/quickstart.yml up --build
+#
+# Then:
+#   - Proxy health: curl -sS http://localhost:8787/health
+#   - Admin UI:     http://localhost:8789  (browser; login with ADMIN_USERNAME / ADMIN_PASSWORD)
+#
+# Default `MASTER_KEY` in DB seed matches Postgres migration
+# `packages/core/migrations-postgres/0002_seed.sql`: sk-dev-admin-key
+# Use it as Bearer token for `POST /api/admin/*` (see docs/api/admin.md).
+#
+# Configure at least one upstream provider and model routes in Admin before
+# `POST /v1/chat/completions` will succeed end-to-end.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}
+      POSTGRES_DB: ${POSTGRES_DB:-octafuse}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - octafuse_quickstart_pg:/var/lib/postgresql/data
+    healthcheck:
+      # 用 CMD-SHELL + $$ 让变量在容器内展开，避免把明文写进 compose
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.migrate
+    environment:
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  gateway-proxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.proxy
+    ports:
+      - "${GATEWAY_PROXY_HOST_PORT:-8787}:8787"
+    environment:
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+      PORT: "8787"
+      # 可选：文本流式超时（毫秒）。空则代码默认 2min / 90s / 10min。
+      STREAM_FIRST_CHUNK_TIMEOUT_MS: ${STREAM_FIRST_CHUNK_TIMEOUT_MS:-}
+      STREAM_IDLE_TIMEOUT_MS: ${STREAM_IDLE_TIMEOUT_MS:-}
+      USAGE_SAFETY_TIMEOUT_MS: ${USAGE_SAFETY_TIMEOUT_MS:-}
+      STREAM_HEADERS_TIMEOUT_MS: ${STREAM_HEADERS_TIMEOUT_MS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  gateway-admin:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.admin
+    ports:
+      - "${GATEWAY_ADMIN_HOST_PORT:-8789}:8789"
+    environment:
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
+      PORT: "8789"
+      # Browser-accessible Proxy base URL; optional, without /v1 or /mcp.
+      GATEWAY_PROXY_URL: ${GATEWAY_PROXY_URL:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD_MUST_BE_SET}
+      # 可选加固：已用 HTTPS 访问 Admin 时可取消注释（见 docs/operators/deployment/docker.md §7.3）
+      # ADMIN_COOKIE_SECURE: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8789/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  octafuse_quickstart_pg:

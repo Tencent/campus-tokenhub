@@ -1,0 +1,19 @@
+# 本机运行时 / 工具产物，不入库
+.DS_Store
+*.tsbuildinfo
+dist/
+.workbuddy/
+.codebuddy/marketplace/
+.tmp-oss/
+.tmp-evidence/
+.playwright-mcp/
+
+# 一次性评审 / 排查报告：仅本地留档，不入库
+docs/code-review-*.md
+
+# openspec 变更文档（proposal/design/specs/tasks/review-report）：仅本地留档，不入库
+openspec/
+
+# 交付物料与一次性对齐清单：仅本地留档，不入库
+**/docs/*.pptx
+**/docs/design-alignment.md

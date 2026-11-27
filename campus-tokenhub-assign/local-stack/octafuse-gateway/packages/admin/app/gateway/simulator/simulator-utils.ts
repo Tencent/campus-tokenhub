@@ -1,0 +1,615 @@
+import { normalizeProxyBaseUrl } from '@/lib/proxy-base-url';
+import { canonicalizeRequestOperation, isRouteAdapterCompatible } from '@octafuse/core/route-topology';
+import { normalizeUpstreamProtocol } from '@octafuse/core/upstream-protocol';
+import {
+	AUDIO_SPEECH_BODY_TEMPLATE,
+	AUDIO_TRANSCRIPTIONS_BODY_TEMPLATE,
+	ELEVENLABS_OPENAI_SPEECH_BODY_TEMPLATE,
+	ELEVENLABS_SPEECH_BODY_TEMPLATE,
+	ELEVENLABS_TRANSCRIPTIONS_BODY_TEMPLATE,
+	MINIMAX_OPENAI_SPEECH_BODY_TEMPLATE,
+	MINIMAX_SPEECH_BODY_TEMPLATE,
+	AUDIO_TRANSCRIPTIONS_FILE_URL_BODY_TEMPLATE,
+	DASHSCOPE_MULTIMODAL_ASR_BODY_TEMPLATE,
+} from '@/lib/audio-transcriptions';
+import { VOLCENGINE_IMAGE_BODY_TEMPLATE, imageBodyTemplateFor, type ImageOperation } from '@/lib/image-generations';
+import { GATEWAY_TOOLS, findGatewayToolById, type GatewayToolDefinition } from '@/lib/gateway-tools';
+import type { AudioOperation, GatewayToolId, OpenaiLlmOperation, SimulatorProtocol } from '@/lib/invoke-kind';
+import { invocationLogQuery } from '@/lib/request-log-kind';
+import type { SimulatorGeminiAction } from '@/lib/simulator/endpoint';
+import {
+	DASHSCOPE_ASYNC_TRANSCRIPTION_BODY_TEMPLATE,
+	DASHSCOPE_MULTIMODAL_SPEECH_BODY_TEMPLATE,
+	DASHSCOPE_REALTIME_OPERATIONS,
+	buildDashScopeNativeSpeechBodyTemplate,
+	buildDashScopeRealtimeAsrTemplate,
+	buildDashScopeRealtimeTtsTemplate,
+	buildDashScopeSpeechBodyTemplate,
+	isDashScopeRealtimeOperation,
+	type DashScopeRealtimeOperation,
+} from '@/lib/dashscope-realtime-client';
+import { buildElevenLabsRealtimeTemplate, isElevenLabsRealtimeOperation } from '@/lib/elevenlabs-realtime-client';
+import type { AdminKeyListItem, AdminModelRow, RouteListRow } from './types';
+
+export const LS_PROTOCOL = 'octafuse.simulator.protocol';
+export const LS_OPENAI_LLM_OPERATION = 'octafuse.simulator.openaiLlmOperation';
+export const LS_MODEL_ID = 'octafuse.simulator.modelId';
+export const LS_ROUTE_GROUP = 'octafuse.simulator.routeGroup';
+export const LS_KEY_ID = 'octafuse.simulator.keyId';
+export const LS_INVOKE_KIND = 'octafuse.simulator.invokeKind';
+export const LS_MODEL_KIND = 'octafuse.simulator.modelKind';
+export const LS_TOOL_ID = 'octafuse.simulator.toolId';
+
+export const KEYS_PAGE_SIZE = 200;
+
+export const inputClass =
+	'min-h-10 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-400 focus:ring-2 focus:ring-gray-100';
+export const labelClass = 'block text-xs font-medium text-gray-500 normal-case tracking-normal mb-1';
+export const panelClass = 'admin-editor-panel rounded-xl border border-gray-200 bg-white p-4 space-y-4';
+export const codeBlockClass =
+	'p-3 text-xs overflow-x-auto whitespace-pre-wrap bg-gray-50 border border-gray-200 rounded-md font-mono text-gray-900';
+
+export const BODY_TEMPLATES: Record<SimulatorProtocol, string> = {
+	openai: `{
+  "model": "<auto>",
+  "messages": [{ "role": "user", "content": "Hello" }],
+  "max_tokens": 256,
+  "stream": true,
+  "stream_options": { "include_usage": true }
+}`,
+	anthropic: `{
+  "model": "<auto>",
+  "messages": [{ "role": "user", "content": "Hello" }],
+  "max_tokens": 256,
+  "stream": true
+}`,
+	gemini: `{
+  "contents": [{ "role": "user", "parts": [{ "text": "Hello" }] }]
+}`,
+	dashscope: '{}',
+	minimax: AUDIO_TRANSCRIPTIONS_BODY_TEMPLATE,
+	elevenlabs: ELEVENLABS_TRANSCRIPTIONS_BODY_TEMPLATE,
+	volcengine: VOLCENGINE_IMAGE_BODY_TEMPLATE,
+};
+
+/** OpenAI Responses：`input` + `store: false`，与调试台默认体对齐。 */
+export const OPENAI_RESPONSES_BODY_TEMPLATE = `{
+  "model": "<auto>",
+  "input": [{ "role": "user", "content": "Hello" }],
+  "max_output_tokens": 256,
+  "store": false,
+  "stream": true
+}`;
+
+/** Agent Tools request body templates（对齐 Proxy `/v1/tools/*` 入参）。 */
+export const TOOL_BODY_TEMPLATES: Record<GatewayToolId, string> = {
+	'web-search': `{
+  "query": "OctaFuse Gateway",
+  "count": 5
+}`,
+	'web-fetch': `{
+  "url": "https://example.com"
+}`,
+	'web-deep-search': `{
+  "query": "OctaFuse Gateway architecture",
+  "count": 3
+}`,
+	'ai-detection': `{
+  "text": "This is a sample paragraph for AI-rate detection."
+}`,
+};
+
+export function bodyTemplateForTool(toolId: string): string {
+	const tool = findGatewayToolById(toolId);
+	if (!tool) return TOOL_BODY_TEMPLATES['web-search'];
+	return TOOL_BODY_TEMPLATES[tool.id as GatewayToolId] ?? TOOL_BODY_TEMPLATES['web-search'];
+}
+
+/** Chat / Images / Audio / Tools template for the current selection. */
+export function bodyTemplateForSelection(
+	protocol: SimulatorProtocol,
+	isImageModel: boolean,
+	imageOperation: ImageOperation = 'generations',
+	audioOperation: AudioOperation | null = null,
+	toolId?: string | null,
+	realtimeOperation?: string | null,
+	providerModelName?: string | null,
+	llmOperation: OpenaiLlmOperation = 'chat',
+	adapter?: string | null,
+	modelId?: string | null
+): string {
+	if (toolId) {
+		return bodyTemplateForTool(toolId);
+	}
+	if (audioOperation && protocol === 'openai') {
+		if (audioOperation === 'speech' && providerModelName) {
+			if (/^speech-/i.test(providerModelName.trim())) return MINIMAX_OPENAI_SPEECH_BODY_TEMPLATE;
+			if (/^eleven_/i.test(providerModelName.trim())) return ELEVENLABS_OPENAI_SPEECH_BODY_TEMPLATE;
+			// OpenAI surface 可能映射到 DashScope；模板音色必须匹配实际供应商模型。
+			return buildDashScopeSpeechBodyTemplate(providerModelName);
+		}
+		if (audioOperation === 'transcriptions' && realtimeOperation === 'audio.transcriptions.async') {
+			return AUDIO_TRANSCRIPTIONS_FILE_URL_BODY_TEMPLATE;
+		}
+		return audioOperation === 'speech' ? AUDIO_SPEECH_BODY_TEMPLATE : AUDIO_TRANSCRIPTIONS_BODY_TEMPLATE;
+	}
+	if (audioOperation && protocol === 'minimax') {
+		return audioOperation === 'speech' ? MINIMAX_SPEECH_BODY_TEMPLATE : AUDIO_TRANSCRIPTIONS_BODY_TEMPLATE;
+	}
+	if (audioOperation && protocol === 'elevenlabs') {
+		if (realtimeOperation && isElevenLabsRealtimeOperation(realtimeOperation)) {
+			return buildElevenLabsRealtimeTemplate(realtimeOperation);
+		}
+		return audioOperation === 'speech' ? ELEVENLABS_SPEECH_BODY_TEMPLATE : ELEVENLABS_TRANSCRIPTIONS_BODY_TEMPLATE;
+	}
+	if (audioOperation && protocol === 'dashscope') {
+		if (realtimeOperation === 'audio.speech' || realtimeOperation === 'audio.speech.stream') {
+			return buildDashScopeNativeSpeechBodyTemplate(providerModelName);
+		}
+		if (realtimeOperation === 'audio.speech.multimodal') return DASHSCOPE_MULTIMODAL_SPEECH_BODY_TEMPLATE;
+		if (realtimeOperation === 'audio.transcriptions.async') return DASHSCOPE_ASYNC_TRANSCRIPTION_BODY_TEMPLATE;
+		if (audioOperation === 'speech') {
+			return buildDashScopeRealtimeTtsTemplate(providerModelName);
+		}
+		if (realtimeOperation === 'audio.transcriptions.multimodal') {
+			return DASHSCOPE_MULTIMODAL_ASR_BODY_TEMPLATE;
+		}
+		return buildDashScopeRealtimeAsrTemplate(
+			realtimeOperation && isDashScopeRealtimeOperation(realtimeOperation) ? realtimeOperation : undefined
+		);
+	}
+	if (
+		isImageModel &&
+		(protocol === 'openai' ||
+			protocol === 'dashscope' ||
+			protocol === 'minimax' ||
+			protocol === 'volcengine' ||
+			protocol === 'gemini')
+	) {
+		return imageBodyTemplateFor({
+			protocol,
+			adapter,
+			modelId,
+			providerModelName,
+			operation: imageOperation,
+		});
+	}
+	if (protocol === 'openai' && llmOperation === 'responses') {
+		return OPENAI_RESPONSES_BODY_TEMPLATE;
+	}
+	return BODY_TEMPLATES[protocol];
+}
+
+/** 从当前模型路由中提取 DashScope 实时 ASR/TTS 的可用对外生命周期。 */
+export function listDashScopeRealtimeOperations(
+	routes: RouteListRow[],
+	modelId: string,
+	routeGroup: string,
+	audioOperation: AudioOperation
+): readonly DashScopeRealtimeOperation[] {
+	const allowed = new Set(
+		DASHSCOPE_REALTIME_OPERATIONS.filter((operation) => operation.startsWith(`audio.${audioOperation}.`))
+	);
+	const found = new Set<DashScopeRealtimeOperation>();
+	for (const route of routes) {
+		if (
+			route.model_id !== modelId ||
+			String(route.status).toLowerCase() !== 'active' ||
+			route.upstream_protocol !== 'dashscope' ||
+			!routeGroupMatchesSelection(route.route_group, routeGroup)
+		) {
+			continue;
+		}
+		const upstreamOperation = route.upstream_operation ?? '';
+		let matchedSurface = false;
+		if (route.surfaces) {
+			try {
+				const surfaces = JSON.parse(route.surfaces) as Array<{
+					request_protocol?: string;
+					request_operation?: string;
+					status?: string;
+				}>;
+				for (const surface of surfaces) {
+					if (surface.status === 'disabled' || surface.request_protocol !== 'dashscope') {
+						continue;
+					}
+					matchedSurface = true;
+					const operation = surface.request_operation ?? '';
+					if (allowed.has(operation as DashScopeRealtimeOperation)) {
+						found.add(operation as DashScopeRealtimeOperation);
+					} else if (operation === '*' && allowed.has(upstreamOperation as DashScopeRealtimeOperation)) {
+						found.add(upstreamOperation as DashScopeRealtimeOperation);
+					}
+				}
+			} catch {
+				// Legacy rows without readable surfaces fall back to their upstream operation.
+			}
+		}
+		if (!matchedSurface && allowed.has(upstreamOperation as DashScopeRealtimeOperation)) {
+			found.add(upstreamOperation as DashScopeRealtimeOperation);
+		}
+	}
+	return DASHSCOPE_REALTIME_OPERATIONS.filter((operation) => found.has(operation));
+}
+
+export const DASHSCOPE_HTTP_ASR_OPERATION = 'audio.transcriptions.multimodal';
+
+const DASHSCOPE_HTTP_AUDIO_OPERATIONS = [
+	'audio.transcriptions.multimodal',
+	'audio.transcriptions.async',
+	'audio.speech',
+	'audio.speech.stream',
+	'audio.speech.multimodal',
+] as const;
+
+/** 模拟器可选的 ElevenLabs 音频入口：HTTP 透传 + 实时 WSS（按路由 surface 是否命中决定）。 */
+export function listElevenLabsAudioClientOperations(
+	routes: RouteListRow[],
+	modelId: string,
+	routeGroup: string,
+	audioOperation: AudioOperation
+): readonly string[] {
+	const httpOperation = audioOperation === 'speech' ? 'audio.speech' : 'audio.transcriptions';
+	const realtimeOperation = audioOperation === 'speech' ? 'audio.speech.realtime' : 'audio.transcriptions.realtime';
+	const found: string[] = [];
+	for (const operation of [httpOperation, realtimeOperation]) {
+		if (filterMatchingActiveRoutes(routes, modelId, routeGroup, 'elevenlabs', operation).length > 0) {
+			found.push(operation);
+		}
+	}
+	return found;
+}
+
+/** 模拟器可选的 DashScope 音频入口：HTTP 透传 + 实时 WSS。 */
+export function listDashScopeAudioClientOperations(
+	routes: RouteListRow[],
+	modelId: string,
+	routeGroup: string,
+	audioOperation: AudioOperation
+): readonly string[] {
+	const realtime = listDashScopeRealtimeOperations(routes, modelId, routeGroup, audioOperation);
+	const prefix = audioOperation === 'speech' ? 'audio.speech' : 'audio.transcriptions';
+	const found = new Set<string>();
+	for (const route of routes) {
+		if (
+			route.model_id !== modelId ||
+			String(route.status).toLowerCase() !== 'active' ||
+			!routeGroupMatchesSelection(route.route_group, routeGroup)
+		) {
+			continue;
+		}
+		const consider = (operation: string | undefined) => {
+			if (!operation || !operation.startsWith(prefix)) return;
+			if ((DASHSCOPE_HTTP_AUDIO_OPERATIONS as readonly string[]).includes(operation)) found.add(operation);
+		};
+		if (route.surfaces) {
+			try {
+				const surfaces = JSON.parse(route.surfaces) as Array<{
+					request_protocol?: string;
+					request_operation?: string;
+					status?: string;
+				}>;
+				for (const surface of surfaces) {
+					if (surface.status === 'disabled' || surface.request_protocol !== 'dashscope') continue;
+					consider(surface.request_operation);
+				}
+			} catch {
+				// ignore unreadable surfaces
+			}
+		}
+		if (route.upstream_protocol === 'dashscope' && route.adapter === 'passthrough') {
+			consider(route.upstream_operation ?? undefined);
+		}
+	}
+	const http = DASHSCOPE_HTTP_AUDIO_OPERATIONS.filter((operation) => found.has(operation));
+	return [...http, ...realtime];
+}
+
+/** Matches Proxy `resolveModelRouting`: default group sends model id only, else `id:group`. */
+export function buildModelRoutingString(modelId: string, routeGroup: string): string {
+	const g = routeGroup.trim();
+	if (!g || g === 'default') return modelId.trim();
+	return `${modelId.trim()}:${g}`;
+}
+
+export function formatModelLabel(m: AdminModelRow): string {
+	const dn = m.display_name?.trim() || 'n/a';
+	return `${m.id} · ${dn} · ${m.vendor}`;
+}
+
+export function formatModelOptionLabel(m: AdminModelRow, hasActiveRouter: boolean): string {
+	const base = formatModelLabel(m);
+	return hasActiveRouter ? `🟢 ${base}` : `🔴 ${base}`;
+}
+
+export function formatKeyOptionLabel(k: AdminKeyListItem): string {
+	return `${k.user_email ?? k.user_id} · ${k.name ?? 'n/a'} · ${k.id.slice(0, 8)}…`;
+}
+
+export function normalizeBodyWhitespace(text: string): string {
+	return text.replace(/\r\n/g, '\n').trim();
+}
+
+export function isBodyDirty(
+	bodyText: string,
+	protocol: SimulatorProtocol,
+	isImageModel = false,
+	imageOperation: ImageOperation = 'generations',
+	audioOperation: AudioOperation | null = null,
+	toolId?: string | null,
+	realtimeOperation?: string | null,
+	providerModelName?: string | null,
+	llmOperation: OpenaiLlmOperation = 'chat',
+	adapter?: string | null,
+	modelId?: string | null
+): boolean {
+	const template = bodyTemplateForSelection(
+		protocol,
+		isImageModel,
+		imageOperation,
+		audioOperation,
+		toolId,
+		realtimeOperation,
+		providerModelName,
+		llmOperation,
+		adapter,
+		modelId
+	);
+	const comparable = (text: string) => {
+		if (protocol === 'dashscope' && realtimeOperation && isDashScopeRealtimeOperation(realtimeOperation)) {
+			try {
+				const body = JSON.parse(text);
+				if (body?.header && typeof body.header === 'object' && !Array.isArray(body.header)) delete body.header.task_id;
+				return JSON.stringify(body);
+			} catch {
+				/* Invalid drafts still differ from the valid template. */
+			}
+		}
+		return normalizeBodyWhitespace(text);
+	};
+	return comparable(bodyText) !== comparable(template);
+}
+
+/** Effective route_group for matching: empty / default → routes with empty or "default" group. */
+export function routeGroupMatchesSelection(routeGroup: string, selected: string): boolean {
+	const sel = selected.trim();
+	const rg = (routeGroup ?? '').trim() || 'default';
+	if (!sel || sel === 'default') {
+		return rg === 'default' || rg === '';
+	}
+	return rg === sel;
+}
+
+export const SIMULATOR_PROTOCOL_ORDER: readonly SimulatorProtocol[] = [
+	'openai',
+	'anthropic',
+	'gemini',
+	'dashscope',
+	'minimax',
+	'volcengine',
+	'elevenlabs',
+];
+
+export type SimulatorClientSurfaceOptions = {
+	protocols: SimulatorProtocol[];
+	openaiLlmOperations: OpenaiLlmOperation[];
+	geminiActions: SimulatorGeminiAction[];
+	imageOperations: ImageOperation[];
+};
+
+const EMPTY_CLIENT_SURFACES: SimulatorClientSurfaceOptions = {
+	protocols: [],
+	openaiLlmOperations: [],
+	geminiActions: [],
+	imageOperations: [],
+};
+
+type RouteSurfaceEntry = {
+	request_protocol?: string;
+	request_operation?: string;
+	status?: string;
+};
+
+function parseRouteSurfaceEntries(raw: string | null | undefined): RouteSurfaceEntry[] {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return Array.isArray(parsed)
+			? parsed.filter((entry): entry is RouteSurfaceEntry => Boolean(entry && typeof entry === 'object'))
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+function isSimulatorProtocol(value: string): value is SimulatorProtocol {
+	return (SIMULATOR_PROTOCOL_ORDER as readonly string[]).includes(value);
+}
+
+function surfaceHasOperation(operations: Set<string>, ...wanted: string[]): boolean {
+	return operations.has('*') || wanted.some((operation) => operations.has(operation));
+}
+
+/**
+ * Client-facing protocols / endpoints from active public surfaces for the selected model + route group.
+ * Legacy rows without surfaces fall back to upstream_protocol + `*`.
+ */
+export function listSupportedClientSurfaces(
+	routes: RouteListRow[],
+	modelId: string,
+	routeGroup: string
+): SimulatorClientSurfaceOptions {
+	if (!modelId) return EMPTY_CLIENT_SURFACES;
+
+	const operationsByProtocol = new Map<SimulatorProtocol, Set<string>>();
+	for (const route of routes) {
+		if (
+			route.model_id !== modelId ||
+			String(route.status).toLowerCase() !== 'active' ||
+			!routeGroupMatchesSelection(route.route_group, routeGroup)
+		) {
+			continue;
+		}
+		const parsed = parseRouteSurfaceEntries(route.surfaces);
+		const entries =
+			parsed.length > 0
+				? parsed
+				: [
+						{
+							request_protocol: route.upstream_protocol ?? 'openai',
+							request_operation: '*',
+							status: 'active',
+						},
+				  ];
+		for (const surface of entries) {
+			if (surface.status === 'disabled') continue;
+			const protocol = String(surface.request_protocol ?? route.upstream_protocol ?? '')
+				.trim()
+				.toLowerCase();
+			if (!isSimulatorProtocol(protocol)) continue;
+			const operation = canonicalizeRequestOperation(protocol, String(surface.request_operation ?? '*').trim() || '*');
+			const bucket = operationsByProtocol.get(protocol) ?? new Set<string>();
+			bucket.add(operation);
+			operationsByProtocol.set(protocol, bucket);
+		}
+	}
+
+	const protocols = SIMULATOR_PROTOCOL_ORDER.filter((protocol) => operationsByProtocol.has(protocol));
+	const openaiOps = operationsByProtocol.get('openai') ?? new Set<string>();
+	const openaiLlmOperations: OpenaiLlmOperation[] = [];
+	if (surfaceHasOperation(openaiOps, 'chat')) openaiLlmOperations.push('chat');
+	if (surfaceHasOperation(openaiOps, 'responses')) openaiLlmOperations.push('responses');
+
+	const geminiOps = operationsByProtocol.get('gemini') ?? new Set<string>();
+	const geminiActions: SimulatorGeminiAction[] = surfaceHasOperation(
+		geminiOps,
+		'models.generate',
+		'generateContent',
+		'streamGenerateContent'
+	)
+		? ['generateContent', 'streamGenerateContent']
+		: [];
+
+	const imageOperations: ImageOperation[] = [];
+	if (surfaceHasOperation(openaiOps, 'images.generations')) imageOperations.push('generations');
+	if (surfaceHasOperation(openaiOps, 'images.edits')) imageOperations.push('edits');
+
+	return { protocols, openaiLlmOperations, geminiActions, imageOperations };
+}
+
+export function filterMatchingActiveRoutes(
+	routes: RouteListRow[],
+	modelId: string,
+	routeGroup: string,
+	requestProtocol?: string,
+	requestOperation?: string
+): RouteListRow[] {
+	if (!modelId) return [];
+	const matchesSurface = (route: RouteListRow): boolean => {
+		if (!requestProtocol || !requestOperation) return true;
+		if (route.surfaces) {
+			try {
+				const surfaces = JSON.parse(route.surfaces) as Array<{
+					request_protocol?: string;
+					request_operation?: string;
+					status?: string;
+				}>;
+				const surfaceHit = surfaces.some(
+					(surface) =>
+						surface.status !== 'disabled' &&
+						surface.request_protocol === requestProtocol &&
+						(surface.request_operation === requestOperation || surface.request_operation === '*')
+				);
+				if (!surfaceHit) return false;
+			} catch {
+				return true;
+			}
+		}
+		try {
+			return isRouteAdapterCompatible({
+				adapter: route.adapter?.trim() || 'passthrough',
+				requestProtocol: normalizeUpstreamProtocol(requestProtocol),
+				requestOperation,
+				upstreamProtocol: normalizeUpstreamProtocol(route.upstream_protocol ?? 'openai'),
+				upstreamOperation: route.upstream_operation?.trim() || '*',
+			});
+		} catch {
+			return false;
+		}
+	};
+	return routes
+		.filter(
+			(r) =>
+				r.model_id === modelId &&
+				String(r.status).toLowerCase() === 'active' &&
+				routeGroupMatchesSelection(r.route_group, routeGroup) &&
+				matchesSurface(r)
+		)
+		.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+}
+
+export function redactAuthHeader(value: string): string {
+	const t = value.trim();
+	const m = /^(Bearer\s+)(.+)$/i.exec(t);
+	if (!m) {
+		if (t.startsWith('sk-') && t.length > 16) return `${t.slice(0, 12)}…${t.slice(-4)}`;
+		return t;
+	}
+	const sk = m[2];
+	if (sk.startsWith('sk-') && sk.length > 16) {
+		return `${m[1]}${sk.slice(0, 12)}…${sk.slice(-4)}`;
+	}
+	return `${m[1]}***`;
+}
+
+export function redactHeaders(headers: Record<string, string>): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(headers)) {
+		out[k] = k.toLowerCase() === 'authorization' ? redactAuthHeader(v) : v;
+	}
+	return out;
+}
+
+export function buildRequestLogsHref(opts: {
+	apiKeyId?: string;
+	modelId?: string;
+	routeGroup?: string;
+	protocol?: string;
+}): string {
+	const sp = new URLSearchParams();
+	if (opts.apiKeyId) sp.set('api_key_id', opts.apiKeyId);
+	if (opts.modelId) sp.set('model_id', opts.modelId);
+	const rg = opts.routeGroup?.trim();
+	if (rg) sp.set('route_group', rg);
+	if (opts.protocol) sp.set('protocol', opts.protocol);
+	const q = sp.toString();
+	return q ? `/gateway/request-logs?${q}` : '/gateway/request-logs';
+}
+
+/** 工具调用也记在请求日志里：按 REST 工具（可选具体工具）和所用 API Key 筛选。 */
+export function buildToolRequestLogsHref(opts: { apiKeyId?: string; toolId?: string } = {}): string {
+	const sp = invocationLogQuery({ source: 'rest', tool: opts.toolId });
+	if (opts.apiKeyId) sp.set('api_key_id', opts.apiKeyId);
+	return `/gateway/request-logs?${sp}`;
+}
+
+export function listGatewayTools(): readonly GatewayToolDefinition[] {
+	return GATEWAY_TOOLS;
+}
+
+export function tryParseProxyBaseUrl(
+	raw: string
+): { ok: true; base: string } | { ok: false; reason: 'empty' | 'invalid' } {
+	const trimmed = raw.trim();
+	if (!trimmed) return { ok: false, reason: 'empty' };
+	const base = normalizeProxyBaseUrl(trimmed);
+	return base ? { ok: true, base } : { ok: false, reason: 'invalid' };
+}
+
+export function prettyJsonBody(bodyText: string): string {
+	try {
+		return JSON.stringify(JSON.parse(bodyText), null, 2);
+	} catch {
+		return bodyText;
+	}
+}

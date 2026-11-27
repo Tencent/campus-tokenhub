@@ -1,0 +1,521 @@
+/*
+ * Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+ * This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+ */
+
+/**
+ * Gemini generateContent / streamGenerateContent 出站：按 `providers.endpoints.gemini` 解析 URL、解析 JSON 或 SSE 中的 usageMetadata。
+ */
+import {
+  applyRouteExtraHeaders,
+  GEMINI_GENERATE_OPERATION,
+  prepareGeminiUpstreamFetch,
+  resolveGeminiAuthForUpstreamSecret,
+  resolveProviderUpstreamSecret,
+  resolveUpstreamEndpoint,
+} from '@octafuse/core';
+import { createCaptureAccumulator } from '../content-capture/accumulate';
+import { isContentCaptureEnabled } from '../accounting/content-sink';
+import { captureFromBodyText, captureUpstreamErrorFromResponse, extractStreamDelta, type StreamCapture } from '../content-capture/extract';
+import type { RouteResult } from '../model-router';
+import type { UsageFromStream } from '../proxy';
+import { buildRouteRequestBody } from '../route-default-params';
+import {
+  isInvalidThoughtSignatureErrorBody,
+  sanitizeGeminiThoughtSignatures,
+  type SanitizedGeminiSignatures,
+} from './gemini-thought-signature';
+import { sanitizeRewrappedHeaders } from './response-headers';
+import { extractUpstreamRequestId, normalizeUpstreamId } from './upstream-request-id';
+import type { RequestTimingAttempt, RequestTimingCollector } from '../request-timing';
+import {
+  peekResponseFirstEvent,
+  type FirstEventTimeoutOptions,
+} from '../stream-first-event-timeout';
+import { fetchUntilHeaders, type UpstreamHeadersTimeoutOptions } from './upstream-fetch-timeout';
+import {
+  applyStreamIdleTimeout,
+  createStreamIdleClock,
+  readWithIdleTimeout,
+  streamIdleTimeoutErrorFrame,
+  type StreamIdleClockOptions,
+} from './stream-idle-timeout';
+
+const idleFrameEncoder = new TextEncoder();
+
+const EMPTY_USAGE_LOCAL: UsageFromStream = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_read_tokens: 0,
+  cache_write_tokens: 0,
+  reasoning_tokens: 0,
+  total_tokens: 0,
+  raw_usage: null,
+};
+
+const POST_DISCONNECT_DRAIN_MS = 90_000;
+const decoder = new TextDecoder();
+
+type GeminiUsageMetadata = {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  totalTokenCount?: number;
+  cachedContentTokenCount?: number;
+  /** Thinking / internal reasoning tokens (Gemini thinking models); see ai.google.dev/gemini-api/docs/thinking */
+  thoughtsTokenCount?: number;
+  thoughts_token_count?: number;
+};
+
+type SSEState = { lineBuffer: string };
+
+function thoughtsTokenCountFromGemini(u: GeminiUsageMetadata): number {
+  const n = u.thoughtsTokenCount ?? u.thoughts_token_count;
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+}
+
+function usageFromGemini(u: GeminiUsageMetadata): UsageFromStream {
+  const inputTokens = u.promptTokenCount ?? 0;
+  const candidatesTokens = u.candidatesTokenCount ?? 0;
+  const cacheRead = u.cachedContentTokenCount ?? 0;
+  const reasoningTokens = thoughtsTokenCountFromGemini(u);
+  /** 与 Google 输出侧计费一致：`output_tokens` = candidates + thoughts（`reasoning_tokens` 仍为 thoughts 分列）。 */
+  const outputTokens = candidatesTokens + reasoningTokens;
+  /** `totalTokenCount` 文档为 prompt + candidates，可能不含 thoughts；取与 explicit 和的上界避免少记。 */
+  const explicitSum = inputTokens + outputTokens;
+  const total =
+    u.totalTokenCount != null ? Math.max(u.totalTokenCount, explicitSum) : explicitSum;
+  const rawJson = JSON.stringify(u);
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: 0,
+    reasoning_tokens: reasoningTokens,
+    total_tokens: total,
+    raw_usage: rawJson,
+  };
+}
+
+function applyUsage(target: UsageFromStream, next: UsageFromStream): void {
+  target.input_tokens = next.input_tokens;
+  target.output_tokens = next.output_tokens;
+  target.cache_read_tokens = next.cache_read_tokens;
+  target.cache_write_tokens = next.cache_write_tokens;
+  target.reasoning_tokens = next.reasoning_tokens;
+  target.total_tokens = next.total_tokens;
+  target.raw_usage = next.raw_usage;
+}
+
+export function hasGeminiReasoningPart(parsed: {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{ text?: unknown; thought?: unknown }>;
+    };
+  }>;
+}): boolean {
+  for (const candidate of parsed.candidates ?? []) {
+    for (const part of candidate.content?.parts ?? []) {
+      if (part.thought === true && typeof part.text === 'string' && part.text.length > 0) return true;
+    }
+  }
+  return false;
+}
+
+export function hasGeminiContentPart(parsed: {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: unknown;
+        thought?: unknown;
+        functionCall?: unknown;
+        function_call?: unknown;
+        inlineData?: unknown;
+        inline_data?: unknown;
+      }>;
+    };
+  }>;
+}): boolean {
+  for (const candidate of parsed.candidates ?? []) {
+    for (const part of candidate.content?.parts ?? []) {
+      if (part.thought === true) continue;
+      if (typeof part.text === 'string' && part.text.length > 0) return true;
+      if (part.functionCall != null || part.function_call != null) return true;
+      if (part.inlineData != null || part.inline_data != null) return true;
+    }
+  }
+  return false;
+}
+
+function parseJsonUsage(text: string, usage: UsageFromStream, timing?: RequestTimingCollector | null, onFrame?: (parsed: unknown) => void): void {
+  try {
+    const parsed = JSON.parse(text) as {
+      usageMetadata?: GeminiUsageMetadata;
+      candidates?: Array<{
+        usageMetadata?: GeminiUsageMetadata;
+        content?: {
+          parts?: Array<{ text?: unknown; thought?: unknown; functionCall?: unknown; function_call?: unknown }>;
+        };
+      }>;
+      responseId?: string;
+      requestId?: string;
+      request_id?: string;
+    };
+    onFrame?.(parsed);
+    timing?.markFirstEvent();
+    if (hasGeminiReasoningPart(parsed)) timing?.markFirstReasoningToken();
+    if (hasGeminiContentPart(parsed)) timing?.markFirstToken();
+    // message id 为 Gemini 顶层 `responseId`（流式每个 chunk 亦带），取首个。
+    if (!usage.upstreamMessageId) {
+      const msgId = normalizeUpstreamId(parsed.responseId);
+      if (msgId) usage.upstreamMessageId = msgId;
+    }
+    // 部分 Gemini 代理在 body 追加 requestId；与 responseId 区分，供日志 request id 解析。
+    if (!usage.upstreamBodyRequestId) {
+      const reqId = normalizeUpstreamId(parsed.requestId ?? parsed.request_id);
+      if (reqId) usage.upstreamBodyRequestId = reqId;
+    }
+    if (parsed.usageMetadata) {
+      applyUsage(usage, usageFromGemini(parsed.usageMetadata));
+      return;
+    }
+    for (const c of parsed.candidates ?? []) {
+      if (c.usageMetadata) {
+        applyUsage(usage, usageFromGemini(c.usageMetadata));
+      }
+    }
+  } catch {
+    // ignore parse failures
+  }
+}
+
+function parseSSEChunk(
+  chunk: Uint8Array,
+  state: SSEState,
+  usage: UsageFromStream,
+  timing?: RequestTimingCollector | null,
+  onFrame?: (parsed: unknown) => void
+): void {
+  state.lineBuffer += decoder.decode(chunk, { stream: true });
+  const lines = state.lineBuffer.split('\n');
+  state.lineBuffer = lines.pop() ?? '';
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue;
+    const data = line.slice(6).trim();
+    if (!data || data === '[DONE]') continue;
+    parseJsonUsage(data, usage, timing, onFrame);
+  }
+}
+
+function processRemainingLineBuffer(
+  state: SSEState,
+  usage: UsageFromStream,
+  timing?: RequestTimingCollector | null,
+  onFrame?: (parsed: unknown) => void
+): void {
+  const line = state.lineBuffer.trim();
+  if (!line.startsWith('data: ')) return;
+  const data = line.slice(6).trim();
+  if (!data || data === '[DONE]') return;
+  parseJsonUsage(data, usage, timing, onFrame);
+}
+
+async function pumpWithUsageTracking(
+  upstream: ReadableStream<Uint8Array>,
+  downstream: WritableStream<Uint8Array>,
+  usage: UsageFromStream,
+  resolveUsage: (u: UsageFromStream) => void,
+  requestSignal?: AbortSignal,
+  timing?: RequestTimingCollector | null,
+  idleOptions?: StreamIdleClockOptions,
+  onFrame?: (parsed: unknown) => void
+): Promise<void> {
+  const reader = upstream.getReader();
+  const writer = downstream.getWriter();
+  const state: SSEState = { lineBuffer: '' };
+  let clientDisconnected = false;
+  let disconnectTime = 0;
+  const idleClock = createStreamIdleClock(idleOptions);
+
+  const onAbort = (): void => {
+    usage.cancelled = true;
+    clientDisconnected = true;
+  };
+  requestSignal?.addEventListener('abort', onAbort);
+
+  try {
+    while (true) {
+      const chunk = await readWithIdleTimeout(reader, idleClock.timeoutMs());
+      if (chunk.idleTimedOut) {
+        applyStreamIdleTimeout(usage);
+        console.log('[Gateway Proxy] gemini stream idle timeout, resolving with partial usage');
+        await reader.cancel();
+        // 干净 EOF 会被部分 SDK 当成正常结束；写协议原生终止错误帧让下游可见失败。
+        // 透传无行缓冲：若上游恰好停在行中间，下游会解析失败，同样表现为报错（概率极低，不特殊处理）。
+        if (!clientDisconnected) {
+          try {
+            await writer.write(idleFrameEncoder.encode(streamIdleTimeoutErrorFrame('gemini')));
+          } catch {
+            clientDisconnected = true;
+            usage.cancelled = true;
+          }
+        }
+        break;
+      }
+      const { done, value } = chunk;
+      idleClock.noteChunk(value);
+      if (done || !value) {
+        processRemainingLineBuffer(state, usage, timing, onFrame);
+        break;
+      }
+
+      if (value.byteLength > 0) timing?.markFirstByte();
+      parseSSEChunk(value, state, usage, timing, onFrame);
+
+      if (!clientDisconnected) {
+        try {
+          await writer.write(value);
+        } catch {
+          clientDisconnected = true;
+          disconnectTime = Date.now();
+          usage.cancelled = true;
+        }
+      }
+
+      if (
+        clientDisconnected &&
+        disconnectTime > 0 &&
+        Date.now() - disconnectTime > POST_DISCONNECT_DRAIN_MS
+      ) {
+        await reader.cancel();
+        break;
+      }
+    }
+  } finally {
+    requestSignal?.removeEventListener('abort', onAbort);
+    timing?.markStreamComplete();
+    resolveUsage(usage);
+    try {
+      await writer.close();
+    } catch (err) {
+      console.warn(
+        '[Gateway Proxy] gemini pump writer.close (non-fatal)',
+        err instanceof Error ? err.message : String(err),
+        { clientDisconnected, usageCancelled: usage.cancelled }
+      );
+    }
+  }
+}
+
+function streamResponseWithUsage(
+  response: Response,
+  requestSignal?: AbortSignal,
+  timing?: RequestTimingCollector | null,
+  idleOptions?: StreamIdleClockOptions,
+  onFrame?: (parsed: unknown) => void
+): { response: Response; usagePromise: Promise<UsageFromStream> } {
+  let resolveUsage!: (u: UsageFromStream) => void;
+  const usagePromise = new Promise<UsageFromStream>((resolve) => {
+    resolveUsage = resolve;
+  });
+  const usage: UsageFromStream = { ...EMPTY_USAGE_LOCAL };
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  pumpWithUsageTracking(response.body!, writable, usage, resolveUsage, requestSignal, timing, idleOptions, onFrame).catch(() => {
+    // resolveUsage in finally
+  });
+
+  return {
+    response: new Response(readable, {
+      status: response.status,
+      headers: {
+        'Content-Type': response.headers.get('Content-Type') ?? 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    }),
+    usagePromise,
+  };
+}
+
+async function nonStreamResponseWithUsage(
+  response: Response,
+  timing?: RequestTimingCollector | null
+): Promise<{ response: Response; usagePromise: Promise<UsageFromStream> }> {
+  const contentType = response.headers.get('Content-Type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return {
+      response,
+      usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+    };
+  }
+  try {
+    const text = await response.text();
+    timing?.markStreamComplete();
+    const usage: UsageFromStream = { ...EMPTY_USAGE_LOCAL };
+    parseJsonUsage(text, usage);
+    return {
+      response: new Response(text, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: sanitizeRewrappedHeaders(response.headers),
+      }),
+      usagePromise: Promise.resolve(usage),
+    };
+  } catch {
+    timing?.markStreamComplete();
+    return {
+      response,
+      usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+    };
+  }
+}
+
+/**
+ * 上游 400 且 body 表示签名无效（`Invalid` / `Corrupted thought signature`）时，返回清洗后的重试请求体；否则 `null`。
+ * 用 `clone()` 读 body，不消耗原响应，不满足条件时原响应原样返回给调用方。
+ */
+async function buildInvalidThoughtSignatureRetry(
+  response: Response,
+  requestBody: unknown
+): Promise<SanitizedGeminiSignatures | null> {
+  if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)) return null;
+  let text: string;
+  try {
+    text = await response.clone().text();
+  } catch {
+    return null;
+  }
+  if (!isInvalidThoughtSignatureErrorBody(text)) return null;
+  return sanitizeGeminiThoughtSignatures(requestBody as Record<string, unknown>);
+}
+
+/**
+ * 调用 Gemini `{base}/{model}:{action}`（`endpoints.gemini.base` 须含完整路径前缀）：URL 查询串可与客户端 `search` 合并；
+ * 官方上游缺省追加 `?key=`；`endpoints.gemini.auth` 为 `bearer` 时改用 `Authorization: Bearer`。
+ * `streamGenerateContent` 走 SSE 解析（上游强制 `alt=sse`）；`generateContent` 单次 JSON 用 `usageMetadata`。
+ * @param search 原始 query 字符串（可含或不含 `?`），会与上游所需参数合并
+ */
+export async function dispatchGeminiRoute(
+  route: RouteResult,
+  body: Record<string, unknown>,
+  action: 'generateContent' | 'streamGenerateContent',
+  search: string,
+  requestSignal?: AbortSignal,
+  timing?: RequestTimingCollector | null,
+  attempt?: RequestTimingAttempt,
+  options?: FirstEventTimeoutOptions & StreamIdleClockOptions & UpstreamHeadersTimeoutOptions
+): Promise<{ response: Response; usagePromise: Promise<UsageFromStream>; upstreamRequestId: string | null; capturePromise?: Promise<StreamCapture> }> {
+  const resolvedUrl = resolveUpstreamEndpoint(
+    'gemini',
+    GEMINI_GENERATE_OPERATION,
+    route.providerEndpoints,
+    {
+      model: route.providerModelName,
+      action,
+      providerId: route.providerId,
+    }
+  );
+  const resolved = await resolveProviderUpstreamSecret(route.providerApiKey);
+  const { url, headers } = prepareGeminiUpstreamFetch({
+    resolvedUrl,
+    modelName: route.providerModelName,
+    action,
+    apiKey: resolved.secret,
+    search,
+    auth: resolveGeminiAuthForUpstreamSecret(
+      route.providerEndpoints.gemini?.auth,
+      resolved.isServiceAccount
+    ),
+  });
+
+  const requestBody = buildRouteRequestBody(route, body);
+  const fetchHeaders = applyRouteExtraHeaders(headers, route.customParams);
+  const headersTimeoutMs = action === 'streamGenerateContent' ? options?.headersTimeoutMs : undefined;
+  const send = (payload: unknown): Promise<Response> =>
+    fetchUntilHeaders(
+      url.toString(),
+      {
+        method: 'POST',
+        headers: fetchHeaders,
+        body: JSON.stringify(payload),
+      },
+      headersTimeoutMs
+    );
+
+  let response = await send(requestBody);
+  if (response.status === 400) {
+    // 会话历史里混有别家上游签发的 thought signature 时，Vertex 会拒绝；400 不触发 failover，
+    // 客户端重试也只会带同一份历史。此处对同一上游用清洗后的历史重试一次。
+    const retryPayload = await buildInvalidThoughtSignatureRetry(response, requestBody);
+    if (retryPayload) {
+      console.log('[Gateway Proxy] gemini invalid thought signature, retrying with sanitized signatures', {
+        providerId: route.providerId,
+        replaced: retryPayload.replaced,
+        removed: retryPayload.removed,
+      });
+      response = await send(retryPayload.body);
+    }
+  }
+  timing?.markAttemptHeaders(attempt, response.status);
+  const upstreamRequestId = extractUpstreamRequestId(response.headers);
+
+  if (response.ok && response.body) {
+    const contentType = response.headers.get('Content-Type') ?? '';
+    if (contentType.includes('application/json') && action === 'generateContent') {
+      const captureClone = isContentCaptureEnabled() ? response.clone() : null;
+      const result = await nonStreamResponseWithUsage(response, timing);
+      const captureBody = captureClone ? await captureClone.text().catch(() => null) : null;
+      return {
+        ...result,
+        upstreamRequestId,
+        capturePromise: captureBody == null ? undefined : Promise.resolve(captureFromBodyText('models.generate', captureBody)),
+      };
+    }
+    const peeked = await peekResponseFirstEvent(
+      response,
+      options?.firstEventTimeoutMs ?? 0,
+      `protocol=gemini providerId=${route.providerId}`
+    );
+    if (peeked.timedOut) {
+      return {
+        response: peeked.response,
+        usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+        upstreamRequestId,
+      };
+    }
+    const capture = createCaptureAccumulator();
+    const result = streamResponseWithUsage(
+      peeked.response,
+      requestSignal,
+      timing,
+      {
+        firstChunkTimeoutMs: options?.firstChunkTimeoutMs,
+        idleTimeoutMs: options?.idleTimeoutMs,
+      },
+      (parsed) => {
+        const delta = extractStreamDelta('models.generate', parsed);
+        if (delta) capture.append(delta);
+      }
+    );
+    return {
+      ...result,
+      upstreamRequestId,
+      capturePromise: result.usagePromise.then(() => capture.finish()),
+    };
+  }
+
+  return {
+
+  	response,
+
+  	usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+
+  	upstreamRequestId,
+
+  	capturePromise: isContentCaptureEnabled()
+
+  		? captureUpstreamErrorFromResponse(response)
+
+  		: undefined,
+
+  };
+}

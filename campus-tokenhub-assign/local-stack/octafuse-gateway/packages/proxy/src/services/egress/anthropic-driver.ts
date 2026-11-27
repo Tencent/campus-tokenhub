@@ -1,0 +1,422 @@
+/*
+ * Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+ * This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+ */
+
+/**
+ * Anthropic Messages 协议出站：组装 URL、合并路由默认参数、流式 SSE 解析 usage，并在断连后限时 drain。
+ */
+import { applyRouteExtraHeaders, resolveProviderUpstreamSecret, resolveUpstreamEndpoint } from '@octafuse/core';
+import { createCaptureAccumulator } from '../content-capture/accumulate';
+import { isContentCaptureEnabled } from '../accounting/content-sink';
+import { captureFromBodyText, captureUpstreamErrorFromResponse, extractStreamDelta, type StreamCapture } from '../content-capture/extract';
+import type { RouteResult } from '../model-router';
+import type { UsageFromStream } from '../proxy';
+import { buildRouteRequestBody } from '../route-default-params';
+import { sanitizeRewrappedHeaders } from './response-headers';
+import { extractUpstreamRequestId, normalizeUpstreamId } from './upstream-request-id';
+import type { RequestTimingAttempt, RequestTimingCollector } from '../request-timing';
+import {
+  peekResponseFirstEvent,
+  type FirstEventTimeoutOptions,
+} from '../stream-first-event-timeout';
+import { fetchUntilHeaders, type UpstreamHeadersTimeoutOptions } from './upstream-fetch-timeout';
+import {
+  applyStreamIdleTimeout,
+  createStreamIdleClock,
+  readWithIdleTimeout,
+  streamIdleTimeoutErrorFrame,
+  type StreamIdleClockOptions,
+} from './stream-idle-timeout';
+
+const idleFrameEncoder = new TextEncoder();
+
+const EMPTY_USAGE_LOCAL: UsageFromStream = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_read_tokens: 0,
+  cache_write_tokens: 0,
+  reasoning_tokens: 0,
+  total_tokens: 0,
+  raw_usage: null,
+};
+
+const POST_DISCONNECT_DRAIN_MS = 90_000;
+const decoder = new TextDecoder();
+
+type AnthropicUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
+type SSEState = { lineBuffer: string };
+
+export function usageFromAnthropic(u: AnthropicUsage): UsageFromStream {
+  const netInputAfterBreakpoint = u.input_tokens ?? 0;
+  const outputTokens = u.output_tokens ?? 0;
+  const cacheRead = u.cache_read_input_tokens ?? 0;
+  const cacheWrite = u.cache_creation_input_tokens ?? 0;
+  // Anthropic: `input_tokens` is only tokens after the last cache breakpoint; cache_* are separate additive buckets.
+  // Total input = net + cache_read + cache_creation (see Anthropic prompt caching docs).
+  // `computeMeteredCost` expects OpenAI-like semantics: `input_tokens` = total prompt, then
+  // regular = input_tokens - cache_read - cache_write.
+  const inputTokensTotal = netInputAfterBreakpoint + cacheRead + cacheWrite;
+  const rawJson = JSON.stringify(u);
+  return {
+    input_tokens: inputTokensTotal,
+    output_tokens: outputTokens,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
+    reasoning_tokens: 0,
+    total_tokens: inputTokensTotal + outputTokens,
+    raw_usage: rawJson,
+  };
+}
+
+function applyUsage(target: UsageFromStream, next: UsageFromStream): void {
+  target.input_tokens = next.input_tokens;
+  target.output_tokens = next.output_tokens;
+  target.cache_read_tokens = next.cache_read_tokens;
+  target.cache_write_tokens = next.cache_write_tokens;
+  target.reasoning_tokens = next.reasoning_tokens;
+  target.total_tokens = next.total_tokens;
+  target.raw_usage = next.raw_usage;
+}
+
+export function hasAnthropicReasoningDelta(parsed: {
+  type?: string;
+  delta?: { type?: unknown; thinking?: unknown };
+}): boolean {
+  if (parsed.type !== 'content_block_delta') return false;
+  const delta = parsed.delta;
+  if (!delta) return false;
+  if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) {
+    return true;
+  }
+  return false;
+}
+
+export function hasAnthropicContentDelta(parsed: {
+  type?: string;
+  delta?: { type?: unknown; text?: unknown; partial_json?: unknown };
+}): boolean {
+  if (parsed.type !== 'content_block_delta' && parsed.type !== 'message_delta') return false;
+  const delta = parsed.delta;
+  if (!delta) return false;
+  if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) return true;
+  if (typeof delta.text === 'string' && delta.text.length > 0) return true;
+  if (typeof delta.partial_json === 'string' && delta.partial_json.length > 0) return true;
+  return false;
+}
+
+function parseEventData(data: string, usage: UsageFromStream, timing?: RequestTimingCollector | null, onFrame?: (parsed: unknown) => void): void {
+  if (!data || data === '[DONE]') return;
+  try {
+    const parsed = JSON.parse(data) as {
+      type?: string;
+      delta?: { type?: unknown; text?: unknown; partial_json?: unknown; thinking?: unknown };
+      usage?: AnthropicUsage;
+      message?: { id?: string };
+    };
+    onFrame?.(parsed);
+    timing?.markFirstEvent();
+    if (hasAnthropicReasoningDelta(parsed)) timing?.markFirstReasoningToken();
+    if (hasAnthropicContentDelta(parsed)) timing?.markFirstToken();
+    // message id 来自 `message_start` 事件的 `message.id`（如 msg_* / msg_bdrk_*）；只取首个。
+    if (!usage.upstreamMessageId) {
+      const msgId = normalizeUpstreamId(parsed.message?.id);
+      if (msgId) usage.upstreamMessageId = msgId;
+    }
+    if (parsed.usage) {
+      applyUsage(usage, usageFromAnthropic(parsed.usage));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function parseSSEChunk(
+  chunk: Uint8Array,
+  state: SSEState,
+  usage: UsageFromStream,
+  timing?: RequestTimingCollector | null,
+  onFrame?: (parsed: unknown) => void
+): void {
+  state.lineBuffer += decoder.decode(chunk, { stream: true });
+  const lines = state.lineBuffer.split('\n');
+  state.lineBuffer = lines.pop() ?? '';
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue;
+    parseEventData(line.slice(6).trim(), usage, timing, onFrame);
+  }
+}
+
+function processRemainingLineBuffer(
+  state: SSEState,
+  usage: UsageFromStream,
+  timing?: RequestTimingCollector | null,
+  onFrame?: (parsed: unknown) => void
+): void {
+  const line = state.lineBuffer.trim();
+  if (!line.startsWith('data: ')) return;
+  parseEventData(line.slice(6).trim(), usage, timing, onFrame);
+}
+
+async function pumpWithUsageTracking(
+  upstream: ReadableStream<Uint8Array>,
+  downstream: WritableStream<Uint8Array>,
+  usage: UsageFromStream,
+  resolveUsage: (u: UsageFromStream) => void,
+  requestSignal?: AbortSignal,
+  timing?: RequestTimingCollector | null,
+  idleOptions?: StreamIdleClockOptions,
+  onFrame?: (parsed: unknown) => void
+): Promise<void> {
+  const reader = upstream.getReader();
+  const writer = downstream.getWriter();
+  const state: SSEState = { lineBuffer: '' };
+  let clientDisconnected = false;
+  let disconnectTime = 0;
+  const idleClock = createStreamIdleClock(idleOptions);
+
+  const onAbort = (): void => {
+    usage.cancelled = true;
+    clientDisconnected = true;
+  };
+  requestSignal?.addEventListener('abort', onAbort);
+
+  try {
+    while (true) {
+      const chunk = await readWithIdleTimeout(reader, idleClock.timeoutMs());
+      if (chunk.idleTimedOut) {
+        applyStreamIdleTimeout(usage);
+        console.log('[Gateway Proxy] anthropic stream idle timeout, resolving with partial usage');
+        await reader.cancel();
+        // 干净 EOF 会被部分 SDK 当成正常结束；写协议原生终止错误帧让下游可见失败。
+        // 透传无行缓冲：若上游恰好停在行中间，下游会解析失败，同样表现为报错（概率极低，不特殊处理）。
+        if (!clientDisconnected) {
+          try {
+            await writer.write(idleFrameEncoder.encode(streamIdleTimeoutErrorFrame('anthropic')));
+          } catch {
+            clientDisconnected = true;
+            usage.cancelled = true;
+          }
+        }
+        break;
+      }
+      const { done, value } = chunk;
+      idleClock.noteChunk(value);
+      if (done || !value) {
+        processRemainingLineBuffer(state, usage, timing, onFrame);
+        break;
+      }
+
+      if (value.byteLength > 0) timing?.markFirstByte();
+      parseSSEChunk(value, state, usage, timing, onFrame);
+
+      if (!clientDisconnected) {
+        try {
+          await writer.write(value);
+        } catch {
+          clientDisconnected = true;
+          disconnectTime = Date.now();
+          usage.cancelled = true;
+        }
+      }
+
+      if (
+        clientDisconnected &&
+        disconnectTime > 0 &&
+        Date.now() - disconnectTime > POST_DISCONNECT_DRAIN_MS
+      ) {
+        await reader.cancel();
+        break;
+      }
+    }
+  } finally {
+    requestSignal?.removeEventListener('abort', onAbort);
+    timing?.markStreamComplete();
+    resolveUsage(usage);
+    try {
+      await writer.close();
+    } catch (err) {
+      console.warn(
+        '[Gateway Proxy] anthropic pump writer.close (non-fatal)',
+        err instanceof Error ? err.message : String(err),
+        { clientDisconnected, usageCancelled: usage.cancelled }
+      );
+    }
+  }
+}
+
+function streamResponseWithUsage(
+  response: Response,
+  requestSignal?: AbortSignal,
+  timing?: RequestTimingCollector | null,
+  idleOptions?: StreamIdleClockOptions,
+  onFrame?: (parsed: unknown) => void
+): { response: Response; usagePromise: Promise<UsageFromStream> } {
+  let resolveUsage!: (u: UsageFromStream) => void;
+  const usagePromise = new Promise<UsageFromStream>((resolve) => {
+    resolveUsage = resolve;
+  });
+
+  const usage: UsageFromStream = { ...EMPTY_USAGE_LOCAL };
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+
+  pumpWithUsageTracking(response.body!, writable, usage, resolveUsage, requestSignal, timing, idleOptions, onFrame).catch(() => {
+    // resolveUsage in finally
+  });
+
+  return {
+    response: new Response(readable, {
+      status: response.status,
+      headers: {
+        'Content-Type': response.headers.get('Content-Type') ?? 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    }),
+    usagePromise,
+  };
+}
+
+async function nonStreamResponseWithUsage(
+  response: Response,
+  timing?: RequestTimingCollector | null
+): Promise<{ response: Response; usagePromise: Promise<UsageFromStream> }> {
+  const contentType = response.headers.get('Content-Type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return {
+      response,
+      usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+    };
+  }
+  try {
+    const text = await response.text();
+    timing?.markStreamComplete();
+    const parsed = JSON.parse(text) as { id?: string; usage?: AnthropicUsage };
+    const usage = parsed.usage ? usageFromAnthropic(parsed.usage) : { ...EMPTY_USAGE_LOCAL };
+    const msgId = normalizeUpstreamId(parsed.id);
+    if (msgId) usage.upstreamMessageId = msgId;
+    return {
+      response: new Response(text, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: sanitizeRewrappedHeaders(response.headers),
+      }),
+      usagePromise: Promise.resolve(usage),
+    };
+  } catch {
+    timing?.markStreamComplete();
+    return {
+      response,
+      usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+    };
+  }
+}
+
+/**
+ * 调用 Anthropic Messages API（`x-api-key` + `anthropic-version`），请求体合并路由默认参数并替换 `model`。
+ * 流式为 SSE，`usagePromise` 在流结束或断连 drain 后解析；非流 JSON 从根对象 `usage` 取数。
+ * @param requestSignal 断连检测与 POST_DISCONNECT_DRAIN_MS 内继续读上游
+ */
+export async function dispatchAnthropicRoute(
+  route: RouteResult,
+  body: Record<string, unknown>,
+  requestSignal?: AbortSignal,
+  timing?: RequestTimingCollector | null,
+  attempt?: RequestTimingAttempt,
+  options?: FirstEventTimeoutOptions & StreamIdleClockOptions & UpstreamHeadersTimeoutOptions
+): Promise<{ response: Response; usagePromise: Promise<UsageFromStream>; upstreamRequestId: string | null; capturePromise?: Promise<StreamCapture> }> {
+  const url = resolveUpstreamEndpoint('anthropic', 'messages', route.providerEndpoints, {
+    providerId: route.providerId,
+  });
+  const { secret } = await resolveProviderUpstreamSecret(route.providerApiKey);
+  const requestBody = {
+    ...buildRouteRequestBody(route, body),
+    model: route.providerModelName,
+  };
+  const isStreamRequest = (requestBody as { stream?: unknown }).stream === true;
+  const response = await fetchUntilHeaders(
+    url,
+    {
+      method: 'POST',
+      headers: applyRouteExtraHeaders(
+        {
+          'Content-Type': 'application/json',
+          'x-api-key': secret,
+          'anthropic-version': '2023-06-01',
+        },
+        route.customParams
+      ),
+      body: JSON.stringify(requestBody),
+    },
+    isStreamRequest ? options?.headersTimeoutMs : undefined
+  );
+  timing?.markAttemptHeaders(attempt, response.status);
+  const upstreamRequestId = extractUpstreamRequestId(response.headers);
+
+  if (response.ok && response.body) {
+    const contentType = response.headers.get('Content-Type') ?? '';
+    if (contentType.includes('application/json')) {
+      const captureClone = isContentCaptureEnabled() ? response.clone() : null;
+      const result = await nonStreamResponseWithUsage(response, timing);
+      const captureBody = captureClone ? await captureClone.text().catch(() => null) : null;
+      return {
+        ...result,
+        upstreamRequestId,
+        capturePromise: captureBody == null ? undefined : Promise.resolve(captureFromBodyText('messages', captureBody)),
+      };
+    }
+    const peeked = await peekResponseFirstEvent(
+      response,
+      options?.firstEventTimeoutMs ?? 0,
+      `protocol=anthropic providerId=${route.providerId}`
+    );
+    if (peeked.timedOut) {
+      return {
+        response: peeked.response,
+        usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+        upstreamRequestId,
+      };
+    }
+    const capture = createCaptureAccumulator();
+    const result = streamResponseWithUsage(
+      peeked.response,
+      requestSignal,
+      timing,
+      {
+        firstChunkTimeoutMs: options?.firstChunkTimeoutMs,
+        idleTimeoutMs: options?.idleTimeoutMs,
+      },
+      (parsed) => {
+        const delta = extractStreamDelta('messages', parsed);
+        if (delta) capture.append(delta);
+      }
+    );
+    return {
+      ...result,
+      upstreamRequestId,
+      capturePromise: result.usagePromise.then(() => capture.finish()),
+    };
+  }
+
+  return {
+
+  	response,
+
+  	usagePromise: Promise.resolve(EMPTY_USAGE_LOCAL),
+
+  	upstreamRequestId,
+
+  	capturePromise: isContentCaptureEnabled()
+
+  		? captureUpstreamErrorFromResponse(response)
+
+  		: undefined,
+
+  };
+}

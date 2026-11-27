@@ -1,0 +1,121 @@
+# Modified by the campus-tokenhub project (Tencent), 2026-11-24.
+# This file is part of a modified OctaFuse Gateway; see MODIFICATIONS.md.
+
+# 本地示例：MySQL 8 + gateway-proxy（对外推理）+ gateway-admin（管理 UI / /api/admin/*）
+# 二者共用同一 DATABASE_URL；镜像由本仓根目录 Dockerfile.* 构建。
+# 迁移链：packages/core/migrations-mysql/（npm run db:migrate:mysql:docker）
+#
+# 必须提供的口令环境变量（缺任意一个 compose 直接报错，不保留任何默认口令）：
+#   MYSQL_ROOT_PASSWORD   MySQL root 口令
+#   MYSQL_PASSWORD        业务账号口令（用户名 / 库名见 MYSQL_USER / MYSQL_DATABASE）
+#   ADMIN_PASSWORD        管理台登录口令
+# 生成示例：export MYSQL_ROOT_PASSWORD=$(openssl rand -hex 24) && \
+#           export MYSQL_PASSWORD=$(openssl rand -hex 24) && \
+#           export ADMIN_PASSWORD=$(openssl rand -hex 24)
+#
+# 可选环境变量（避免与本机端口冲突）：
+#   GATEWAY_PROXY_HOST_PORT=8787 GATEWAY_ADMIN_HOST_PORT=8789 docker compose -f docker/compose/node-mysql.yml up -d gateway-proxy gateway-admin
+#
+#   docker compose -f docker/compose/node-mysql.yml up -d mysql
+#   docker compose -f docker/compose/node-mysql.yml --profile migrate run --rm migrate
+#   docker compose -f docker/compose/node-mysql.yml up -d gateway-proxy gateway-admin
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD_MUST_BE_SET}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-octafuse}
+      MYSQL_USER: ${MYSQL_USER:-octafuse}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD_MUST_BE_SET}
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - octafuse_mysql:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      # 用 CMD-SHELL + $$ 让口令在容器内展开，避免把明文写进 compose
+      test: ["CMD-SHELL", 'mysqladmin ping -h 127.0.0.1 -u"$$MYSQL_USER" -p"$$MYSQL_PASSWORD"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  migrate:
+    profiles: ["migrate"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile.migrate
+    environment:
+      DATABASE_DRIVER: mysql
+      DATABASE_URL: mysql://${MYSQL_USER:-octafuse}:${MYSQL_PASSWORD:?MYSQL_PASSWORD_MUST_BE_SET}@mysql:3306/${MYSQL_DATABASE:-octafuse}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  gateway-proxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.proxy
+    ports:
+      - "${GATEWAY_PROXY_HOST_PORT:-8787}:8787"
+    environment:
+      DATABASE_DRIVER: mysql
+      DATABASE_URL: mysql://${MYSQL_USER:-octafuse}:${MYSQL_PASSWORD:?MYSQL_PASSWORD_MUST_BE_SET}@mysql:3306/${MYSQL_DATABASE:-octafuse}
+      PORT: "8787"
+      # 可选：文本流式超时（毫秒）。空则代码默认 2min / 90s / 10min。
+      STREAM_FIRST_CHUNK_TIMEOUT_MS: ${STREAM_FIRST_CHUNK_TIMEOUT_MS:-}
+      STREAM_IDLE_TIMEOUT_MS: ${STREAM_IDLE_TIMEOUT_MS:-}
+      USAGE_SAFETY_TIMEOUT_MS: ${USAGE_SAFETY_TIMEOUT_MS:-}
+      STREAM_HEADERS_TIMEOUT_MS: ${STREAM_HEADERS_TIMEOUT_MS:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  gateway-admin:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.admin
+    ports:
+      - "${GATEWAY_ADMIN_HOST_PORT:-8789}:8789"
+    environment:
+      DATABASE_DRIVER: mysql
+      DATABASE_URL: mysql://${MYSQL_USER:-octafuse}:${MYSQL_PASSWORD:?MYSQL_PASSWORD_MUST_BE_SET}@mysql:3306/${MYSQL_DATABASE:-octafuse}
+      PORT: "8789"
+      # Browser-accessible Proxy base URL; optional, without /v1 or /mcp.
+      GATEWAY_PROXY_URL: ${GATEWAY_PROXY_URL:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD_MUST_BE_SET}
+      # 可选加固：已用 HTTPS 访问 Admin 时可取消注释（见 docs/operators/deployment/docker.md §7.3）
+      # ADMIN_COOKIE_SECURE: "1"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8789/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  octafuse_mysql:

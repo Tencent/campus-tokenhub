@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TokenHub 门户 × OctaFuse 网关 · 技术架构与数据流程</title>
+<style>
+  :root{
+    --ink:#0F172A;
+    --sub:#475569;
+    --faint:#94A3B8;
+    --line:#E6ECF4;
+    --bg:#F5F8FC;
+    --portal:#0E9F6E;
+    --admin:#7C3AED;
+    --proxy:#EA8C1B;
+    --edge:#2563EB;
+    --data:#475569;
+    --ext:#8A97A8;
+    --warn:#DC2626;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    background:
+      radial-gradient(1100px 520px at 50% -8%, #E9F1FE 0%, rgba(233,241,254,0) 62%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:1520px;margin:0 auto;padding:60px 32px 100px}
+  header.top{margin-bottom:40px}
+  .kicker{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:#94A3B8;font-weight:700}
+  h1{font-size:29px;line-height:1.32;margin:12px 0 14px;font-weight:700;letter-spacing:-.02em;color:#0B1220}
+  .lede{font-size:14px;line-height:1.85;color:#475569;max-width:940px;margin:0}
+  .lede code{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12.5px;
+    background:#EAF1FA;padding:1.5px 6px;border-radius:5px;color:#1E3A5F;
+  }
+
+  .fig{
+    background:#fff;
+    border:1px solid #E6ECF4;
+    border-radius:20px;
+    padding:30px 30px 24px;
+    margin-bottom:34px;
+    box-shadow:0 1px 2px rgba(15,23,42,.04), 0 12px 32px -20px rgba(15,23,42,.22);
+  }
+  .fig-head{display:flex;align-items:baseline;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+  .fig-no{
+    font-size:10.5px;font-weight:700;letter-spacing:.1em;color:#fff;
+    background:#0F172A;padding:4px 10px;border-radius:999px;
+  }
+  .fig h2{font-size:18.5px;margin:0;font-weight:650;letter-spacing:-.01em;color:#0B1220}
+  .fig-desc{font-size:13px;color:#475569;line-height:1.8;margin:8px 0 20px}
+  .fig-desc b{color:#0F172A;font-weight:650}
+  .fig-desc code{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:11.8px;
+    background:#EEF4FB;padding:1px 5px;border-radius:4px;color:#1E3A5F;
+  }
+  svg{display:block;width:100%;height:auto}
+  svg rect[stroke], svg rect.bx{filter:drop-shadow(0 1px 1.5px rgba(15,23,42,.055))}
+
+  /* ---- SVG 通用 ---- */
+  .bx{fill:#fff;stroke:#DDE5EF;stroke-width:1.4}
+  .tt{font-size:13.5px;font-weight:650;fill:#0F172A}
+  .st{font-size:11.5px;fill:#475569}
+  .mt{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:10.5px;fill:#334155}
+  .lb{font-size:10px;fill:#94A3B8;font-weight:700;letter-spacing:.14em}
+  .tag{font-size:10.5px;fill:#64748B}
+  .arw{fill:none;stroke:#9AA7B8;stroke-width:1.6}
+  .arw-d{fill:none;stroke:#9AA7B8;stroke-width:1.45;stroke-dasharray:5 4}
+  .arw-r{fill:none;stroke:#DC2626;stroke-width:1.9}
+  .lbl{font-size:10.5px;fill:#7E8CA0}
+
+  .legend{
+    display:flex;gap:10px 24px;flex-wrap:wrap;
+    font-size:12px;color:#475569;
+    margin-top:20px;padding-top:16px;border-top:1px solid #EDF2F8;
+  }
+  .legend i{
+    display:inline-block;width:24px;height:0;border-top:2px solid #9AA7B8;
+    border-radius:2px;vertical-align:middle;margin-right:8px;position:relative;top:-1px;
+  }
+  .legend i.dash{border-top-style:dashed}
+  .legend i.red{border-top-color:var(--warn)}
+  .legend i.blue{border-top-color:#5B7FA8;border-top-width:3px}
+  .legend b{
+    display:inline-block;width:10px;height:10px;border-radius:3px;
+    margin-right:8px;vertical-align:middle;
+    box-shadow:inset 0 0 0 1px rgba(15,23,42,.10);
+  }
+
+  .notes{
+    margin:20px 0 0;padding:0;list-style:none;
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px 32px;
+  }
+  .notes li{font-size:12.5px;line-height:1.78;color:#475569;padding-left:18px;position:relative}
+  .notes li::before{
+    content:"";position:absolute;left:0;top:9px;width:5px;height:5px;border-radius:50%;background:#C4D4E6;
+  }
+  .notes li b{color:#0F172A;font-weight:650}
+  .notes li code{
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:11.5px;
+    background:#EEF4FB;padding:0 5px;border-radius:4px;color:#1E3A5F;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">campus-tokenhub · octafuse-gateway</div>
+  <h1>TokenHub 学校门户 × OctaFuse 网关：技术架构与数据流程</h1>
+  <p class="lede">
+    一套七容器全栈：外部 <code>/tokenhub/*</code> 整段交给 Nginx，路径细分全部发生在这一跳；
+    门户（Next.js）与网关（Proxy / Admin）共用同一个 Postgres，靠 <code>octafuse_gateway</code> 与 <code>portal</code> 两个 schema 做命名空间隔离。
+    以下四张图按「部署拓扑 → 登录开户 → 推理主链路 → 管理侧写链路」排列。
+  </p>
+</header>
+
+<!-- ============================================================ 图 1 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">图 1</span><h2>技术架构图｜部署拓扑与逻辑分层</h2></div>
+  <p class="fig-desc">五层自上而下：用户 → 接入 → <b>业务应用（门户）</b> → <b>网关能力（管理 / 代理）</b> → 数据，右侧为外部依赖。门户是聚合层，单向依赖下面的管理服务。</p>
+
+  <svg viewBox="0 0 1440 1036" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="技术架构图">
+    <defs>
+      <marker id="a1" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto">
+        <path d="M0,1 L7.5,4 L0,7" fill="none" stroke="#9AA7B8" stroke-width="1.4"/>
+      </marker>
+      <marker id="a1d" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto">
+        <path d="M0,1 L7.5,4 L0,7" fill="none" stroke="#9AA7B8" stroke-width="1.4"/>
+      </marker>
+      <marker id="a1v" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto">
+        <path d="M0,1 L7.5,4 L0,7" fill="none" stroke="#5B7FA8" stroke-width="1.5"/>
+      </marker>
+    </defs>
+
+    <!-- 层背景带 -->
+    <g>
+      <rect x="40" y="56" width="1080" height="102" rx="14" fill="#EAF1F9"/>
+      <rect x="40" y="182" width="1080" height="156" rx="14" fill="#EAF1F9"/>
+      <rect x="40" y="392" width="1080" height="176" rx="14" fill="#EAF1F9"/>
+      <rect x="40" y="602" width="1080" height="196" rx="14" fill="#EAF1F9"/>
+      <rect x="40" y="832" width="1080" height="186" rx="14" fill="#EAF1F9"/>
+      <!-- 外部依赖单独一条更淡的带，表示不在本栈内 -->
+      <rect x="1158" y="56" width="252" height="620" rx="14" fill="#F7FAFE" stroke="#E3EBF5" stroke-width="1" stroke-dasharray="6 5"/>
+    </g>
+
+    <!-- 层标签 -->
+    <text class="lb" x="54" y="110" fill="#78899E">用户</text>
+    <text class="lb" x="54" y="264" fill="#78899E">接入</text>
+    <text class="lb" x="54" y="484" fill="#78899E">业务</text>
+    <text class="lb" x="54" y="704" fill="#78899E">网关</text>
+    <text class="lb" x="54" y="929" fill="#78899E">数据</text>
+    <text class="lb" x="1176" y="80" fill="#8C9BAF">外部</text>
+
+    <!-- ================= 连线 ================= -->
+    <!-- 用户 / 终端 → Nginx 入口 -->
+    <path class="arw" marker-end="url(#a1)" d="M245,150 L245,186"/>
+    <path class="arw" marker-end="url(#a1)" d="M585,150 L585,186"/>
+    <path class="arw" marker-end="url(#a1)" d="M925,150 L925,186"/>
+    <!-- Nginx → 业务层 -->
+    <path class="arw" marker-end="url(#a1)" d="M290,330 L290,396"/>
+    <!-- Nginx → 能力层：共用右侧主干后分叉 -->
+    <path class="arw" d="M950,330 L950,580"/>
+    <path class="arw" marker-end="url(#a1)" d="M950,580 L275,580 L275,606"/>
+    <path class="arw" marker-end="url(#a1)" d="M950,580 L750,580 L750,606"/>
+    <!-- 门户 → 管理台（Admin API） -->
+    <path d="M200,560 L200,606" fill="none" stroke="#5B7FA8" stroke-width="1.9" marker-end="url(#a1v)"/>
+    <!-- 门户 → Postgres（portal schema） -->
+    <path class="arw-d" marker-end="url(#a1d)" d="M90,520 L64,520 L64,830 L150,830 L150,836"/>
+    <!-- 管理台 / 网关 → Postgres -->
+    <path class="arw" marker-end="url(#a1)" d="M275,790 L275,836"/>
+    <path class="arw" marker-end="url(#a1)" d="M665,790 L665,836"/>
+    <!-- 网关 → 三家上游 -->
+    <path class="arw" marker-end="url(#a1)" d="M850,650 L1166,350"/>
+    <path class="arw" marker-end="url(#a1)" d="M850,690 L1166,480"/>
+    <path class="arw" marker-end="url(#a1)" d="M850,730 L1166,610"/>
+    <!-- 浏览器 ↔ IdP（绕顶部） -->
+    <path class="arw-d" marker-end="url(#a1d)" d="M150,64 L150,34 L1290,34 L1290,60"/>
+
+    <!-- 分流编号（对应 Nginx 盒内的 ①②③） -->
+    <circle cx="300" cy="366" r="8.5" fill="#F5F9FF" stroke="#9CC3F0" stroke-width="1"/>
+    <text x="300" y="369.5" text-anchor="middle" font-size="9" fill="#1D4ED8">②</text>
+    <circle cx="289" cy="598" r="8.5" fill="#F5F9FF" stroke="#9CC3F0" stroke-width="1"/>
+    <text x="289" y="601.5" text-anchor="middle" font-size="9" fill="#1D4ED8">①</text>
+    <circle cx="764" cy="598" r="8.5" fill="#F5F9FF" stroke="#9CC3F0" stroke-width="1"/>
+    <text x="764" y="601.5" text-anchor="middle" font-size="9" fill="#1D4ED8">③</text>
+
+    <!-- ================= 用户层 ================= -->
+    <g>
+      <rect class="bx" x="90" y="64" width="310" height="86" rx="11"/>
+      <text class="tt" x="108" y="90">学生浏览器</text>
+      <text class="st" x="108" y="112">门户页面 · 在线调试台（Playground）</text>
+      <text class="mt" x="108" y="132">持有 portal_session Cookie</text>
+
+      <rect class="bx" x="430" y="64" width="310" height="86" rx="11"/>
+      <text class="tt" x="448" y="90">学生终端 / 第三方 SDK</text>
+      <text class="st" x="448" y="112">curl · OpenAI SDK · WorkBuddy</text>
+      <text class="mt" x="448" y="132">Authorization: Bearer sk-…</text>
+
+      <rect class="bx" x="770" y="64" width="310" height="86" rx="11"/>
+      <text class="tt" x="788" y="90">管理员浏览器</text>
+      <text class="st" x="788" y="112">门户设置/初始化 · 网关管理台</text>
+      <text class="mt" x="788" y="132">同一份 portal_session 验签进入</text>
+    </g>
+
+    <!-- ================= 接入层 ================= -->
+    <g>
+      <rect x="90" y="190" width="990" height="140" rx="11" fill="#E4EFFD" stroke="#8FBAF2" stroke-width="1.2"/>
+      <text class="tt" x="108" y="216" fill="#1D4ED8">Nginx :8088 — 唯一对外入口（其余容器全部绑 127.0.0.1）</text>
+      <text class="st" x="108" y="240" fill="#2563EB">外部 /tokenhub/* 整段进来，不改写路径；路径细分、前缀剥除全在这一跳完成</text>
+      <text class="mt" x="108" y="268" fill="#1D4ED8">① /tokenhub/admin/**　→ gateway-admin:8789　〔剥掉 /tokenhub/admin〕</text>
+      <text class="mt" x="108" y="288" fill="#1D4ED8">② /tokenhub/portal/**　→ portal:3000　〔原样透传，Next basePath 自带前缀〕</text>
+      <text class="mt" x="108" y="308" fill="#1D4ED8">③ 其余 /tokenhub/**　→ gateway-proxy:8787　〔剥掉 /tokenhub〕</text>
+    </g>
+
+    <!-- ================= 业务应用层 ================= -->
+    <g>
+      <rect x="90" y="400" width="510" height="160" rx="12" fill="#F0FBF7" stroke="#3DC48F" stroke-width="1.5"/>
+      <text class="tt" x="108" y="420" fill="#05704E">campus-tokenhub　业务聚合层</text>
+      <text class="st" x="108" y="441" fill="#0B7A5E">Next.js 15 App Router · :3000 · basePath = /tokenhub/portal</text>
+      <line x1="108" y1="452" x2="582" y2="452" stroke="#CFEEE2"/>
+      <text class="st" x="108" y="474">登录 · 模型集市 · 调试台 · 用量</text>
+      <text class="st" x="108" y="492">成员 · 设置 · 初始化向导</text>
+      <text class="tag" x="108" y="510">↓ 向下调 Admin API：用户 / 密钥 / 额度 / 日志</text>
+      <text class="st" x="108" y="528">API 路由 + middleware（会话 · CSP · 限流）</text>
+      <text class="tag" x="108" y="546">不代理推理；写权限仅活动配置 / 管理员名单</text>
+
+      <text class="tag" x="644" y="468" fill="#8C9BAF">业务层只有门户一个组件</text>
+      <text class="tag" x="644" y="490" fill="#78899E">它不转发推理流量，与代理服务之间没有请求路径</text>
+      <text class="tag" x="644" y="512" fill="#8C9BAF">横向只通过 Admin API 依赖网关的管理服务</text>
+    </g>
+
+    <!-- ================= 网关能力层 ================= -->
+    <g>
+      <rect x="90" y="610" width="370" height="180" rx="12" fill="#F7F3FE" stroke="#A78BFA" stroke-width="1.2"/>
+      <text class="tt" x="108" y="636" fill="#6D28D9">octafuse-admin　管理服务</text>
+      <text class="st" x="108" y="657" fill="#7C3AED">Vite SPA + 自定义 Node 入口 · :8789</text>
+      <text class="mt" x="108" y="675" fill="#7C3AED">公网前缀 = /tokenhub/admin</text>
+      <line x1="108" y1="688" x2="442" y2="688" stroke="#E5DBFC"/>
+      <text class="st" x="108" y="708">用户 · 密钥 · 供应商 · 模型 · 路由</text>
+      <text class="st" x="108" y="726">定价 · 请求日志 · 正文详情 · 审计</text>
+      <text class="st" x="108" y="748">人类登录复用门户 SSO：</text>
+      <text class="tag" x="108" y="766">验签 portal_session → 复核管理员名单</text>
+      <text class="mt" x="108" y="782">ADMIN_AUTH_MODE=portal 可一键回滚</text>
+
+      <rect x="480" y="610" width="370" height="180" rx="12" fill="#FFF8EF" stroke="#F2A94A" stroke-width="1.2"/>
+      <text class="tt" x="498" y="636" fill="#B45309">octafuse-proxy　代理服务</text>
+      <text class="st" x="498" y="657" fill="#B45309">Hono · :8787 · OpenAI / Anthropic / Gemini 兼容</text>
+      <line x1="498" y1="670" x2="832" y2="670" stroke="#FBE4C6"/>
+      <text class="mt" x="498" y="690" fill="#9A5512">/v1/chat/completions · /v1/responses</text>
+      <text class="mt" x="498" y="707" fill="#9A5512">/v1/embeddings · /v1/images · /v1/audio</text>
+      <text class="mt" x="498" y="724" fill="#9A5512">/v1/messages · /v1/models · /catalog/models</text>
+      <text class="st" x="498" y="746">鉴权 · 选路 · 熔断 · failover</text>
+      <text class="st" x="498" y="764">记账 · 正文旁路留存</text>
+      <text class="tag" x="498" y="782">流式 SSE 直通，不落中间态</text>
+    </g>
+
+    <!-- ================= 数据层 ================= -->
+    <g>
+      <rect x="90" y="840" width="700" height="170" rx="12" fill="#F8FAFC" stroke="#A6B6C9" stroke-width="1.3"/>
+      <text class="tt" x="108" y="866" fill="#1E293B">Postgres 16　同库 · 双 schema</text>
+      <line x1="445" y1="878" x2="445" y2="998" stroke="#CBD5E1"/>
+
+      <text class="mt" x="108" y="892" fill="#3E4C5E" font-weight="600">octafuse_gateway.*（网关业务表）</text>
+      <text class="mt" x="108" y="914" fill="#475569">users · api_keys · providers</text>
+      <text class="mt" x="108" y="934" fill="#475569">models · model_routes · model_tags</text>
+      <text class="mt" x="108" y="954" fill="#475569">api_key_request_logs</text>
+      <text class="mt" x="108" y="974" fill="#475569">request_content（月分区 · 90 天）</text>
+      <text class="mt" x="108" y="994" fill="#475569">system_config · user_audit_logs</text>
+
+      <text class="mt" x="462" y="892" fill="#3E4C5E" font-weight="600">portal.*（门户自有表，不碰网关业务表）</text>
+      <text class="mt" x="462" y="914" fill="#475569">app_config · login_config</text>
+      <text class="mt" x="462" y="934" fill="#475569">activity_configs · member_admins</text>
+      <text class="mt" x="462" y="954" fill="#475569">member_applications</text>
+      <text class="mt" x="462" y="974" fill="#475569">settings · config_audit</text>
+      <text class="mt" x="462" y="994" fill="#475569">session_revocations</text>
+
+      <rect x="830" y="840" width="250" height="80" rx="10" fill="#fff" stroke="#DCE4EE" stroke-width="1.1"/>
+      <text class="st" x="848" y="865" font-weight="600">portal_data 数据卷</text>
+      <text class="tag" x="848" y="885">旧 JSON 申请单，仅首次迁移时读一次</text>
+      <text class="tag" x="848" y="903">迁移后保留作备份，运行期不再读写</text>
+
+      <rect x="830" y="936" width="250" height="74" rx="10" fill="#fff" stroke="#DCE4EE" stroke-width="1.1"/>
+      <text class="st" x="848" y="960" font-weight="600">审计｜容器 stdout 单行 JSON</text>
+      <text class="tag" x="848" y="980">→ Loki / CLS 采集</text>
+      <text class="tag" x="848" y="998">Key 打码为 sk-***，口令替换 ***</text>
+    </g>
+
+    <!-- ================= 外部依赖 ================= -->
+    <g>
+      <rect x="1170" y="64" width="240" height="110" rx="12" fill="#FCFDFF" stroke="#BFCCDB" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text class="tt" x="1188" y="90" fill="#334155">学校统一身份（IdP）</text>
+      <text class="mt" x="1188" y="111" fill="#64748B">OAuth2 标准授权码 / CAS</text>
+      <text class="mt" x="1188" y="131" fill="#64748B">authorization · token · userinfo</text>
+      <text class="tag" x="1188" y="151">浏览器跳转，服务端换 token</text>
+
+      <rect x="1170" y="300" width="240" height="100" rx="12" fill="#FCFDFF" stroke="#BFCCDB" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text class="tt" x="1188" y="326" fill="#334155">腾讯云 TokenHub</text>
+      <text class="mt" x="1188" y="347" fill="#64748B">tokenhub.tencentmaas.com/v1</text>
+      <text class="tag" x="1188" y="367">provider id: tencent-tokenhub</text>
+      <text class="mt" x="1188" y="386" fill="#0E9F6E" font-weight="600">路由池权重 8</text>
+
+      <rect x="1170" y="430" width="240" height="100" rx="12" fill="#FCFDFF" stroke="#BFCCDB" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text class="tt" x="1188" y="456" fill="#334155">阿里云百炼</text>
+      <text class="mt" x="1188" y="477" fill="#64748B">dashscope…/compatible-mode/v1</text>
+      <text class="tag" x="1188" y="497">provider id: aliyun-bailian</text>
+      <text class="mt" x="1188" y="516" fill="#64748B" font-weight="600">路由池权重 1</text>
+
+      <rect x="1170" y="560" width="240" height="100" rx="12" fill="#FCFDFF" stroke="#BFCCDB" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text class="tt" x="1188" y="586" fill="#334155">火山方舟</text>
+      <text class="mt" x="1188" y="607" fill="#64748B">ark.cn-beijing.volces.com/api/v3</text>
+      <text class="tag" x="1188" y="627">provider id: volcano-ark</text>
+      <text class="mt" x="1188" y="646" fill="#64748B" font-weight="600">路由池权重 1</text>
+
+    </g>
+
+    <!-- 连线标注 -->
+  </svg>
+
+  <div class="legend">
+    <span><i></i>同步调用</span>
+    <span><i class="blue"></i>门户 → 网关的依赖调用（向下）</span>
+    <span><i class="dash"></i>只读 / 跳转 / 异步 / 外围调用</span>
+    <span><b style="background:#0E9F6E"></b>门户（业务聚合）</span>
+    <span><b style="background:#7C3AED"></b>管理服务</span>
+    <span><b style="background:#D97706"></b>代理服务</span>
+  </div>
+
+  <ul class="notes">
+    <li><b>部署平级，依赖分上下层。</b>三个容器挂在 Nginx 后面是并列的三条路由，但依赖方向是单向的：门户向下调管理服务的 Admin API，读模型、用户、额度、日志。管理台反过来验签门户的 <code>portal_session</code>（只为人类登录），这是唯一一条反向依赖。</li>
+    <li><b>一条没画在主线上的隐式调用。</b>模型集市的数据实际来自代理服务暴露的公开目录 <code>GET /catalog/models</code>（无认证，网关进程内缓存 45 秒）。它不构成业务依赖——推理流量与门户无关——但排查「刚初始化完模型没出现」会踩到：网关 45 秒 + 门户 15 秒两层缓存。</li>
+    <li><b>门户不代理推理流量。</b>学生调模型是浏览器 / 终端直连 <code>NEXT_PUBLIC_PROXY_BASE</code>，Key 只在客户端内存，门户只负责下发与吊销。</li>
+    <li><b>三路分流的差异有原因：</b>门户是 Next，页面里写的是根绝对路径 <code>/_next/…</code>，反代剥前缀会 404 或抢共享域名的根路径，所以自带 <code>basePath</code> 原样透传；管理台与推理 API 都按根路径运行，剥一次即可。</li>
+    <li><b>权限放大点：</b>门户服务端持有网关管理员账密，换 <code>admin_session</code> 后读写全站用户与密钥，进程内做登录单飞避免触发管理台锁定。这是整套架构里唯一需要严格守住的凭证边界。</li>
+    <li><b>数据边界：</b>额度、密钥、调用日志、模型目录、初始化状态全部实时读网关，门户不落盘；只有活动配置、管理员名单等业务表 + 配置表落在 <code>portal.*</code>。</li>
+    <li><b>部署时序：</b><code>postgres</code> → <code>migrate</code>（建表 + 种子，跑完退出）→ <code>gateway-proxy</code> / <code>gateway-admin</code> → <code>portal</code> → <code>portal-seed</code>（只填空值，不覆盖设置页改过的配置）→ <code>nginx</code>，前一步健康才起下一步。</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 图 2 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">图 2</span><h2>数据流程图｜登录与开户</h2></div>
+  <p class="fig-desc">一次授权码登录要穿过 IdP、门户、网关 Admin API 三段。开户是「get-or-create」语义（<code>external_system + external_user_id</code> 幂等），失败不阻断登录。</p>
+
+  <svg viewBox="0 0 1440 722" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="登录与开户流程">
+    <defs>
+      <marker id="a2" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#8FA0B5" stroke-width="1.5"/>
+      </marker>
+      <marker id="a2r" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#DC2626" stroke-width="1.6"/>
+      </marker>
+    </defs>
+
+    <!-- 生命线：统一浅灰，不抢消息 -->
+    <line x1="160" y1="112" x2="160" y2="742" stroke="#D5E0EE" stroke-width="1.3" stroke-dasharray="4 5"/>
+    <line x1="440" y1="112" x2="440" y2="742" stroke="#D5E0EE" stroke-width="1.3" stroke-dasharray="4 5"/>
+    <line x1="720" y1="112" x2="720" y2="742" stroke="#D5E0EE" stroke-width="1.3" stroke-dasharray="4 5"/>
+    <line x1="1000" y1="112" x2="1000" y2="742" stroke="#D5E0EE" stroke-width="1.3" stroke-dasharray="4 5"/>
+    <line x1="1290" y1="112" x2="1290" y2="742" stroke="#D5E0EE" stroke-width="1.3" stroke-dasharray="4 5"/>
+
+    <!-- 参与者 -->
+    <g>
+      <rect class="bx" x="60" y="40" width="200" height="66" rx="11"/>
+      <rect x="74" y="44" width="172" height="3" rx="1.5" fill="#94A3B8"/>
+      <text class="tt" x="160" y="70" text-anchor="middle">学生浏览器</text>
+      <text class="tag" x="160" y="90" text-anchor="middle">无会话状态</text>
+
+      <rect x="340" y="40" width="200" height="66" rx="11" fill="#F0FBF7" stroke="#3DC48F" stroke-width="1.4"/>
+      <rect x="354" y="44" width="172" height="3" rx="1.5" fill="#0E9F6E"/>
+      <text class="tt" x="440" y="70" text-anchor="middle" fill="#05704E">campus-tokenhub</text>
+      <text class="tag" x="440" y="90" text-anchor="middle">/api/auth/*</text>
+
+      <rect class="bx" x="620" y="40" width="200" height="66" rx="11" stroke="#BFCCDB" stroke-dasharray="5 4"/>
+      <rect x="634" y="44" width="172" height="3" rx="1.5" fill="#B4C2D4"/>
+      <text class="tt" x="720" y="70" text-anchor="middle">学校 IdP</text>
+      <text class="tag" x="720" y="90" text-anchor="middle">OAuth2 / CAS</text>
+
+      <rect x="900" y="40" width="200" height="66" rx="11" fill="#F7F3FE" stroke="#A78BFA" stroke-width="1.4"/>
+      <rect x="914" y="44" width="172" height="3" rx="1.5" fill="#7C3AED"/>
+      <text class="tt" x="1000" y="70" text-anchor="middle" fill="#6D28D9">网关 Admin API</text>
+      <text class="tag" x="1000" y="90" text-anchor="middle">:8789</text>
+
+      <rect x="1190" y="40" width="200" height="66" rx="11" fill="#F8FAFC" stroke="#A6B6C9" stroke-width="1.4"/>
+      <rect x="1204" y="44" width="172" height="3" rx="1.5" fill="#64748B"/>
+      <text class="tt" x="1290" y="70" text-anchor="middle" fill="#1E293B">Postgres</text>
+      <text class="tag" x="1290" y="90" text-anchor="middle">octafuse_gateway</text>
+    </g>
+
+    <!-- ① 首次访问 -->
+    <path d="M160,170 L432,170" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="180" y="160" fill="#334155">① GET /tokenhub/portal/login</text>
+
+    <!-- ② 跳转 IdP -->
+    <path d="M440,214 L168,214" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="168" y="204" fill="#334155">② 302 → IdP 授权端点（带 state）</text>
+
+    <!-- ③ 用户认证 -->
+    <path d="M160,258 L712,258" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="180" y="248" fill="#334155">③ 用户在 IdP 完成认证</text>
+
+    <!-- ④ 回调 -->
+    <path d="M720,302 L168,302" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="180" y="292" fill="#334155">④ 302 callback?code=…&amp;state=…</text>
+
+    <!-- ⑤ 回调处理 -->
+    <path d="M160,346 L432,346" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="180" y="336" fill="#334155">⑤ GET /api/auth/callback</text>
+
+    <!-- ⑥ 自处理 -->
+    <rect x="452" y="372" width="304" height="30" rx="7" fill="#F2FAF6" stroke="#A8E0CB" stroke-width="1.1"/>
+    <text class="mt" x="466" y="391" fill="#0B7A5E">⑥ 校验 state（oidc_tx）+ 同源校验</text>
+
+    <!-- ⑦ 换 token -->
+    <path d="M440,430 L712,430" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="452" y="420" fill="#334155">⑦ POST token（code 换 token）</text>
+
+    <!-- ⑧ userinfo -->
+    <path d="M440,474 L712,474" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="452" y="464" fill="#334155">⑧ GET userinfo → Identity</text>
+
+    <!-- ⑨ 开户（权限放大点） -->
+    <path d="M440,518 L992,518" fill="none" stroke="#DC2626" stroke-width="1.9" marker-end="url(#a2r)"/>
+    <text class="mt" x="452" y="508" fill="#B91C1C">⑨ POST /api/admin/users　★ 服务端持管理员账密换 admin_session</text>
+
+    <!-- ⑩ upsert -->
+    <path d="M1000,562 L1282,562" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="1012" y="550" fill="#334155">⑩ upsert users</text>
+    <text class="tag" x="1012" y="580" fill="#64748B">按 external_system + external_user_id 幂等</text>
+
+    <!-- ⑪ 返回 -->
+    <path d="M1000,606 L448,606" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="452" y="596" fill="#334155">⑪ { id, email }　已存在时返回 200 + 已有对象</text>
+
+    <!-- ⑫ 签发会话 -->
+    <rect x="452" y="632" width="424" height="30" rx="7" fill="#F2FAF6" stroke="#A8E0CB" stroke-width="1.1"/>
+    <text class="mt" x="466" y="651" fill="#0B7A5E">⑫ 签发 portal_session（名单命中则写 admin: true）</text>
+
+    <!-- ⑬ 落地 -->
+    <path d="M440,690 L168,690" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
+    <text class="mt" x="168" y="680" fill="#334155">⑬ Set-Cookie + 302：首次登录且无负责人 → /setup</text>
+  </svg>
+
+  <ul class="notes">
+    <li><b>门户从不存学生身份。</b>IdP 返回的 <code>sub</code> 只进会话 Cookie；网关侧的用户 ID 由第 ⑨ 步 get-or-create 拿到，也进 Cookie，不落门户库。</li>
+    <li><b>开户失败不阻断登录。</b>第 ⑨ 步失败时降级为「账号开通中」，页面提示、审计记 <code>provision.fail</code>，下次登录自动重试。</li>
+    <li><b>管理员声明在签发时判定。</b>门户按 <code>portal_shared.admins</code> 名单往会话写 <code>admin: true</code>，管理台每次请求再按当前名单复核，撤权不必等会话过期。</li>
+    <li><b>首次部署没有 SSO 时</b>可以用 <code>PORTAL_ADMIN_USERNAME/PASSWORD</code> 走账号密码登录完成对接，<code>AUTH_PROVIDER</code> 配齐后自动关闭。</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 图 3 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">图 3</span><h2>数据流程图｜推理调用主链路</h2></div>
+  <p class="fig-desc">这是整套系统真正承压的一条路径：<b>不经过门户</b>，客户端拿着 <code>sk-</code> 直连。鉴权、预算、选路、熔断、failover 全在 proxy 内完成，回包后才异步记账与旁路留存正文。</p>
+
+  <svg viewBox="0 0 1440 758" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="推理调用主链路">
+    <defs>
+      <marker id="a3" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#9AA7B8" stroke-width="1.5"/>
+      </marker>
+      <marker id="a3d" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#B0BAC8" stroke-width="1.4"/>
+      </marker>
+    </defs>
+
+    <g transform="translate(0,-46)">
+
+    <!-- 阶段箭头 -->
+    <path d="M212,290 L244,290" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M426,290 L458,290" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M664,290 L696,290" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M942,290 L974,290" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M1166,290 L1198,290" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a3)"/>
+
+    <!-- 阶段 1 客户端 -->
+    <rect class="bx" x="36" y="110" width="176" height="390" rx="13"/>
+    <circle cx="61" cy="132" r="12" fill="#64748B"/><text x="61" y="136.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">01</text><text x="78" y="136" font-size="10.5" font-weight="700" fill="#64748B" letter-spacing=".06em">客户端</text>
+    <text class="tt" x="52" y="166">调用方</text>
+    <line x1="52" y1="180" x2="196" y2="180" stroke="#E8EEF6"/>
+    <text class="st" x="52" y="204">浏览器调试台</text>
+    <text class="st" x="52" y="226">学生终端 / SDK</text>
+    <text class="st" x="52" y="248">WorkBuddy</text>
+    <line x1="52" y1="268" x2="196" y2="268" stroke="#E8EEF6"/>
+    <text class="mt" x="52" y="292">POST</text>
+    <text class="mt" x="52" y="310">/v1/chat/</text>
+    <text class="mt" x="52" y="328">completions</text>
+    <line x1="52" y1="348" x2="196" y2="348" stroke="#E8EEF6"/>
+    <text class="tag" x="52" y="372">Authorization:</text>
+    <text class="mt" x="52" y="390">Bearer sk-…</text>
+    <text class="tag" x="52" y="416">Key 由门户下发，</text>
+    <text class="tag" x="52" y="434">只在客户端内存</text>
+    <text class="tag" x="52" y="462">CSP connect-src</text>
+    <text class="tag" x="52" y="480">白名单放行直连</text>
+
+    <!-- 阶段 2 接入 -->
+    <rect class="bx" x="250" y="110" width="176" height="390" rx="13"/>
+    <circle cx="275" cy="132" r="12" fill="#64748B"/><text x="275" y="136.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">02</text><text x="292" y="136" font-size="10.5" font-weight="700" fill="#64748B" letter-spacing=".06em">接入</text>
+    <text class="tt" x="266" y="166">Nginx :8088</text>
+    <line x1="266" y1="180" x2="410" y2="180" stroke="#E8EEF6"/>
+    <text class="mt" x="266" y="204">剥掉 /tokenhub</text>
+    <text class="mt" x="266" y="226">→ proxy:8787</text>
+    <line x1="266" y1="246" x2="410" y2="246" stroke="#E8EEF6"/>
+    <text class="tag" x="266" y="270">透传请求头</text>
+    <text class="mt" x="266" y="290">X-Forwarded-For</text>
+    <text class="mt" x="266" y="308">X-Forwarded-Proto</text>
+    <line x1="266" y1="328" x2="410" y2="328" stroke="#E8EEF6"/>
+    <text class="tag" x="266" y="352">SSE 流式直通，</text>
+    <text class="tag" x="266" y="370">不缓冲整包</text>
+    <text class="tag" x="266" y="398">按 IP 限流建议</text>
+    <text class="tag" x="266" y="416">在这一层做</text>
+
+    <!-- 阶段 3 鉴权 -->
+    <rect x="464" y="110" width="200" height="390" rx="13" fill="#FEF7EE" stroke="#F2A94A" stroke-width="1.2"/>
+    <circle cx="489" cy="132" r="12" fill="#EA8C1B"/><text x="489" y="136.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">03</text><text x="506" y="136" font-size="10.5" font-weight="700" fill="#B4780E" letter-spacing=".06em">鉴权</text>
+    <text class="tt" x="480" y="166" fill="#B45309">middleware / auth</text>
+    <line x1="480" y1="180" x2="648" y2="180" stroke="#F7E5CC"/>
+    <text class="tag" x="480" y="204">从 header / x-api-key</text>
+    <text class="tag" x="480" y="222">提取 sk-…</text>
+    <line x1="480" y1="240" x2="648" y2="240" stroke="#F7E5CC"/>
+    <text class="mt" x="480" y="264" fill="#9A5512">查 api_keys + users</text>
+    <text class="tag" x="480" y="284">未命中 / 已吊销</text>
+    <text class="mt" x="480" y="302" fill="#B91C1C">→ 401</text>
+    <line x1="480" y1="320" x2="648" y2="320" stroke="#F7E5CC"/>
+    <text class="tag" x="480" y="344">懒重置预算周期</text>
+    <text class="tag" x="480" y="362">（到期就在读库时写回）</text>
+    <line x1="480" y1="380" x2="648" y2="380" stroke="#F7E5CC"/>
+    <text class="tag" x="480" y="404">双层限流：</text>
+    <text class="tag" x="480" y="422">key.rate_limit</text>
+    <text class="tag" x="480" y="440">user.rate_limit</text>
+    <text class="tag" x="480" y="466">OAuth access token</text>
+    <text class="tag" x="480" y="484">走同一入口校验</text>
+
+    <!-- 阶段 4 路由 -->
+    <rect x="702" y="110" width="240" height="390" rx="13" fill="#FEF7EE" stroke="#F2A94A" stroke-width="1.2"/>
+    <circle cx="727" cy="132" r="12" fill="#EA8C1B"/><text x="727" y="136.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">04</text><text x="744" y="136" font-size="10.5" font-weight="700" fill="#B4780E" letter-spacing=".06em">路由决策</text>
+    <text class="tt" x="718" y="166" fill="#B45309">model-router</text>
+    <line x1="718" y1="180" x2="926" y2="180" stroke="#F7E5CC"/>
+    <text class="tag" x="718" y="204">解析 model → 路由池</text>
+    <text class="mt" x="718" y="224" fill="#9A5512">model_routes</text>
+    <text class="tag" x="718" y="242">（同款模型跨厂商共用一个模型 id）</text>
+    <line x1="718" y1="258" x2="926" y2="258" stroke="#F7E5CC"/>
+    <text class="tag" x="718" y="282">route_policy.strategy</text>
+    <text class="mt" x="736" y="302" fill="#475569">weighted_random</text>
+    <text class="mt" x="736" y="320" fill="#475569">weight_priority</text>
+    <text class="mt" x="736" y="338" fill="#475569">hash_affinity</text>
+    <text class="tag" x="718" y="358">权重默认 8 : 1 : 1</text>
+    <line x1="718" y1="374" x2="926" y2="374" stroke="#F7E5CC"/>
+    <text class="tag" x="718" y="398">熔断检查（两级）</text>
+    <text class="mt" x="736" y="416" fill="#475569">provider-circuit</text>
+    <text class="mt" x="736" y="434" fill="#475569">user-model-circuit</text>
+    <text class="tag" x="718" y="458">全部不可用</text>
+    <text class="mt" x="718" y="476" fill="#B91C1C">→ 503</text>
+
+    <!-- 阶段 5 上游 -->
+    <rect class="bx" x="980" y="110" width="186" height="390" rx="13"/>
+    <circle cx="1005" cy="132" r="12" fill="#64748B"/><text x="1005" y="136.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">05</text><text x="1022" y="136" font-size="10.5" font-weight="700" fill="#64748B" letter-spacing=".06em">上游</text>
+    <text class="tt" x="996" y="166">failover-dispatch</text>
+    <line x1="996" y1="180" x2="1150" y2="180" stroke="#E8EEF6"/>
+    <text class="tag" x="996" y="204">按权重挑一条路由</text>
+    <text class="tag" x="996" y="222">失败自动换下一条</text>
+    <line x1="996" y1="240" x2="1150" y2="240" stroke="#E8EEF6"/>
+    <text class="mt" x="996" y="264">TokenHub</text>
+    <text class="mt" x="996" y="284">阿里云百炼</text>
+    <text class="mt" x="996" y="304">火山方舟</text>
+    <line x1="996" y1="322" x2="1150" y2="322" stroke="#E8EEF6"/>
+    <text class="tag" x="996" y="346">统一走 OpenAI</text>
+    <text class="tag" x="996" y="364">兼容协议 +</text>
+    <text class="mt" x="996" y="382">Bearer 上游 Key</text>
+    <line x1="996" y1="400" x2="1150" y2="400" stroke="#E8EEF6"/>
+    <text class="tag" x="996" y="424">上游 Key 存在</text>
+    <text class="mt" x="996" y="442">providers.api_key</text>
+    <text class="tag" x="996" y="462">由初始化向导写入，</text>
+    <text class="tag" x="996" y="480">不进 .env / 镜像</text>
+
+    <!-- 阶段 6 回包 -->
+    <rect class="bx" x="1204" y="110" width="196" height="390" rx="13"/>
+    <circle cx="1229" cy="132" r="12" fill="#64748B"/><text x="1229" y="136.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">06</text><text x="1246" y="136" font-size="10.5" font-weight="700" fill="#64748B" letter-spacing=".06em">回包</text>
+    <text class="tt" x="1220" y="166">stream / json</text>
+    <line x1="1220" y1="180" x2="1384" y2="180" stroke="#E8EEF6"/>
+    <text class="tag" x="1220" y="204">SSE 分块透传</text>
+    <text class="tag" x="1220" y="222">首块 / 空闲超时</text>
+    <text class="tag" x="1220" y="240">可配（STREAM_*）</text>
+    <line x1="1220" y1="258" x2="1384" y2="258" stroke="#E8EEF6"/>
+    <text class="tag" x="1220" y="282">usage → 计费</text>
+    <text class="tag" x="1220" y="300">token / 张 / 秒</text>
+    <text class="tag" x="1220" y="318">按模型计费口径</text>
+    <line x1="1220" y1="336" x2="1384" y2="336" stroke="#E8EEF6"/>
+    <text class="tag" x="1220" y="360">错误统一成</text>
+    <text class="tag" x="1220" y="378">gateway 错误码</text>
+    <line x1="1220" y1="396" x2="1384" y2="396" stroke="#E8EEF6"/>
+    <text class="tag" x="1220" y="420">X-Request-Id</text>
+    <text class="tag" x="1220" y="438">贯穿日志与审计</text>
+
+    <!-- 异步支路 -->
+    <text class="lb" x="464" y="552">异步旁路（不阻塞回包）</text>
+
+    <path class="arw-d" marker-end="url(#a3d)" d="M1300,500 L1300,524 L856,524 L856,560"/>
+
+    <rect x="790" y="564" width="326" height="104" rx="11" fill="#F8FAFD" stroke="#D5DFEC" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text class="st" x="806" y="588" font-weight="600">正文留存｜content-capture</text>
+    <text class="mt" x="806" y="609">脱敏正文 → 攒批 50 条 / 500ms</text>
+    <text class="mt" x="806" y="627">→ request_content（按自然月分区）</text>
+    <text class="tag" x="806" y="647">单侧上限 65536 字符；队列满即丢弃，</text>
+    <text class="tag" x="806" y="663">不影响计费与请求链路</text>
+
+    <path class="arw-d" marker-end="url(#a3d)" d="M790,616 L678,616"/>
+
+    <rect x="464" y="564" width="208" height="104" rx="11" fill="#F8FAFD" stroke="#D5DFEC" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text class="st" x="480" y="588" font-weight="600">记账｜accounting</text>
+    <text class="mt" x="480" y="609">buildAccountingEvent</text>
+    <text class="mt" x="480" y="627">→ recordUsage</text>
+    <text class="mt" x="480" y="645">→ api_key_request_logs</text>
+
+    <!-- 异常带 -->
+    <text class="lb" x="36" y="706">异常与降级</text>
+    <g>
+      <rect x="37" y="727" width="3.5" height="28" rx="1.8" fill="#F0A0A0"/>
+      <rect x="265" y="727" width="3.5" height="28" rx="1.8" fill="#F0A0A0"/>
+      <rect x="511" y="727" width="3.5" height="28" rx="1.8" fill="#F0A0A0"/>
+      <rect x="713" y="727" width="3.5" height="28" rx="1.8" fill="#F4C88A"/>
+      <rect x="951" y="727" width="3.5" height="28" rx="1.8" fill="#F0A0A0"/>
+      <rect x="1207" y="727" width="3.5" height="28" rx="1.8" fill="#F0A0A0"/>
+    </g>
+    <rect x="36" y="718" width="212" height="46" rx="9" fill="#FEF2F2" stroke="#FAC4C4" stroke-width="1"/>
+    <text class="st" x="52" y="738" fill="#B91C1C" font-weight="600">401</text>
+    <text class="tag" x="80" y="738">密钥无效 / 已吊销</text>
+    <text class="tag" x="52" y="756">不泄露「存在但无权」</text>
+
+    <rect x="264" y="718" width="230" height="46" rx="9" fill="#FEF2F2" stroke="#FAC4C4" stroke-width="1"/>
+    <text class="st" x="280" y="738" fill="#B91C1C" font-weight="600">402 / 429</text>
+    <text class="tag" x="356" y="738">预算或余额不足</text>
+    <text class="tag" x="280" y="756">周期额度 + 永久额度双口径</text>
+
+    <rect x="510" y="718" width="186" height="46" rx="9" fill="#FEF2F2" stroke="#FAC4C4" stroke-width="1"/>
+    <text class="st" x="526" y="738" fill="#B91C1C" font-weight="600">503</text>
+    <text class="tag" x="576" y="738">无可用路由</text>
+    <text class="tag" x="526" y="756">no_available_route</text>
+
+    <rect x="712" y="718" width="222" height="46" rx="9" fill="#FFF8EC" stroke="#F4D7A4" stroke-width="1"/>
+    <text class="st" x="728" y="738" fill="#B45309" font-weight="600">熔断</text>
+    <text class="tag" x="768" y="738">→ failover 换路由</text>
+    <text class="tag" x="728" y="756">不把故障上游打穿</text>
+
+    <rect x="950" y="718" width="240" height="46" rx="9" fill="#FEF2F2" stroke="#FAC4C4" stroke-width="1"/>
+    <text class="st" x="966" y="738" fill="#B91C1C" font-weight="600">上游 5xx</text>
+    <text class="tag" x="1042" y="738">分类后重试或记失败</text>
+    <text class="tag" x="966" y="756">失败原因落 request_logs</text>
+
+    <rect x="1206" y="718" width="194" height="46" rx="9" fill="#FEF2F2" stroke="#FAC4C4" stroke-width="1"/>
+    <text class="st" x="1222" y="738" fill="#B91C1C" font-weight="600">超时</text>
+    <text class="tag" x="1266" y="738">中断流并释放</text>
+    <text class="tag" x="1222" y="756">usage 安全超时兜底</text>
+      </g>
+  </svg>
+
+  <ul class="notes">
+    <li><b>这条链路完全不经过门户。</b>门户挂了不影响推理；反过来，proxy 挂了门户只能显示「网关不可用」，因为额度、模型目录、日志全是实时读的。</li>
+    <li><b>鉴权与预算是同一跳。</b>读 <code>api_keys + users</code> 时顺带做预算周期懒重置并写回，避免额外的定时任务。</li>
+    <li><b>路由池是「同款模型」的分流器。</b><code>deepseek-v4.1-flash-1017</code> 这类跨厂商模型共用一个网关模型 id，各厂商真实模型名写在 <code>route.providerModelName</code>，权重 8:1:1 决定主备倾斜。</li>
+    <li><b>记账与正文都在回包之后。</b>记账走异步 sink，正文走攒批队列，两者都不阻塞 token 流；这也是为什么「关闭正文留存」只影响后续调用、不影响计费。</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 图 4 -->
+<section class="fig">
+  <div class="fig-head"><span class="fig-no">图 4</span><h2>数据流程图｜初始化与统一采买写入</h2></div>
+  <p class="fig-desc">门户唯一的写网关路径：把统一采买的云厂商 Key、模型清单与路由写成网关的 <code>provider / model / route</code>，写完即生效。其余管理动作一律跳网关管理台。</p>
+
+  <svg viewBox="0 0 1440 532" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="初始化与统一采买写入链路">
+    <defs>
+      <marker id="a4" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,1 L8,4 L0,7" fill="none" stroke="#9AA7B8" stroke-width="1.5"/>
+      </marker>
+    </defs>
+
+    <g transform="translate(0,-50)">
+
+    <path d="M210,140 L234,140" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a4)"/>
+    <path d="M430,140 L454,140" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a4)"/>
+    <path d="M624,140 L654,140" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a4)"/>
+    <path d="M854,140 L884,140" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a4)"/>
+    <path d="M1094,140 L1124,140" fill="none" stroke="#8FA0B5" stroke-width="2" marker-end="url(#a4)"/>
+
+    <rect class="bx" x="40" y="88" width="170" height="104" rx="11"/>
+    <text class="st" x="56" y="114" font-weight="600">管理员浏览器</text>
+    <text class="mt" x="56" y="136">打开 /setup</text>
+    <text class="tag" x="56" y="156">requireSetupAccess：</text>
+    <text class="tag" x="56" y="174">管理员名单</text>
+
+    <rect x="240" y="88" width="190" height="104" rx="11" fill="#F0FBF7" stroke="#3DC48F" stroke-width="1.2"/>
+    <text class="st" x="256" y="114" font-weight="600" fill="#05704E">POST /api/setup/probe</text>
+    <text class="mt" x="256" y="136" fill="#0B7A5E">GET {provider}/models</text>
+    <text class="tag" x="256" y="156" fill="#0B7A5E">拿不到列表时退化为</text>
+    <text class="tag" x="256" y="174" fill="#0B7A5E">一次 8 token 最小对话</text>
+
+    <rect class="bx" x="460" y="88" width="164" height="104" rx="11" stroke-dasharray="5 4"/>
+    <text class="st" x="476" y="114" font-weight="600">上游供应商</text>
+    <text class="mt" x="476" y="136">TokenHub / 百炼 / 方舟</text>
+    <text class="tag" x="476" y="156">返回可用模型列表</text>
+    <text class="tag" x="476" y="174">清单外仅腾讯云可补</text>
+
+    <rect x="660" y="88" width="194" height="104" rx="11" fill="#F0FBF7" stroke="#3DC48F" stroke-width="1.2"/>
+    <text class="st" x="676" y="114" font-weight="600" fill="#05704E">POST /api/setup/apply</text>
+    <text class="mt" x="676" y="136" fill="#0B7A5E">dryRun 先返回 diff</text>
+    <text class="tag" x="676" y="156" fill="#0B7A5E">正式执行逐条返回</text>
+    <text class="tag" x="676" y="174" fill="#0B7A5E">created / skipped / failed</text>
+
+    <rect x="890" y="88" width="204" height="104" rx="11" fill="#F7F3FE" stroke="#A78BFA" stroke-width="1.2"/>
+    <text class="st" x="906" y="114" font-weight="600" fill="#6D28D9">网关 Admin API</text>
+    <text class="mt" x="906" y="136" fill="#7C3AED">POST /api/admin/providers</text>
+    <text class="mt" x="906" y="154" fill="#7C3AED">POST /api/admin/models</text>
+    <text class="mt" x="906" y="172" fill="#7C3AED">POST /api/admin/routes</text>
+
+    <rect x="1130" y="88" width="270" height="104" rx="11" fill="#F8FAFC" stroke="#A6B6C9" stroke-width="1.2"/>
+    <text class="st" x="1146" y="114" font-weight="600" fill="#1E293B">Postgres · octafuse_gateway</text>
+    <text class="mt" x="1146" y="136" fill="#475569">providers.api_key（学校 Key 唯一落点）</text>
+    <text class="mt" x="1146" y="154" fill="#475569">models · model_routes</text>
+    <text class="mt" x="1146" y="172" fill="#475569">system_config：ONBOARDING_COMPLETED</text>
+
+    <rect x="40" y="204" width="1360" height="46" rx="9" fill="#F2FAF6" stroke="#C2EAD8" stroke-width="1"/>
+    <text class="tag" x="56" y="222" fill="#0B7A5E">三家供应商各记一个完成标记：ONBOARDING_COMPLETED / _ALIYUN / _VOLCANO；初始化负责人 ONBOARDING_OWNER 全局唯一</text>
+    <text class="tag" x="56" y="240" fill="#0B7A5E">学校 Key 只在服务端流转，写进 providers.api_key，不进 .env、不进镜像、不进日志</text>
+
+    <rect x="40" y="256" width="1360" height="46" rx="9" fill="#F8F4FE" stroke="#DACBF8" stroke-width="1"/>
+    <text class="tag" x="56" y="274" fill="#7C3AED">初始化是幂等的：provider 按固定 id 先查后写，model 按 id、route 按 model_id + provider_id 判定</text>
+    <text class="tag" x="56" y="292" fill="#7C3AED">不勾「强制覆盖」只补缺，保留学校在管理台改过的定价与折扣；中途失败不回滚，完成项下次自动跳过</text>
+
+    <line x1="40" y1="326" x2="1400" y2="326" stroke="#E8EEF6" stroke-width="1.5"/>
+    <text class="lb" x="40" y="356">apply 内部写入顺序（前一步成功才写下一步）</text>
+
+    <path class="arw" marker-end="url(#a4)" d="M290,421 L306,421"/>
+    <path class="arw" marker-end="url(#a4)" d="M560,421 L576,421"/>
+    <path class="arw" marker-end="url(#a4)" d="M860,421 L876,421"/>
+    <path class="arw" marker-end="url(#a4)" d="M1110,421 L1126,421"/>
+
+    <rect x="40" y="372" width="250" height="98" rx="10" fill="#FCFDFF" stroke="#DBE5F2" stroke-width="1.1"/>
+    <circle cx="64" cy="390" r="9" fill="#5B7FA8"/><text x="64" y="393.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">1</text><text class="st" x="80" y="394" font-weight="600" fill="#1E293B">providers</text>
+    <text class="tag" x="56" y="414">按固定 id 先查后写</text>
+    <text class="tag" x="56" y="432">写入学校 Key → api_key</text>
+    <text class="mt" x="56" y="452">tencent-tokenhub 等三家</text>
+
+    <rect x="310" y="372" width="250" height="98" rx="10" fill="#FCFDFF" stroke="#DBE5F2" stroke-width="1.1"/>
+    <circle cx="334" cy="390" r="9" fill="#5B7FA8"/><text x="334" y="393.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">2</text><text class="st" x="350" y="394" font-weight="600" fill="#1E293B">models</text>
+    <text class="tag" x="326" y="414">按 model id 幂等</text>
+    <text class="tag" x="326" y="432">上下文 / 模态 / 定价</text>
+    <text class="mt" x="326" y="452">→ pricing_profile</text>
+
+    <rect x="580" y="372" width="280" height="98" rx="10" fill="#FCFDFF" stroke="#DBE5F2" stroke-width="1.1"/>
+    <circle cx="604" cy="390" r="9" fill="#5B7FA8"/><text x="604" y="393.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">3</text><text class="st" x="620" y="394" font-weight="600" fill="#1E293B">model_routes</text>
+    <text class="tag" x="596" y="414">按 model_id + provider_id 判定</text>
+    <text class="tag" x="596" y="432">weight：腾讯云 8，其余 1</text>
+    <text class="mt" x="596" y="452">route_policy: weighted_random</text>
+
+    <rect x="880" y="372" width="230" height="98" rx="10" fill="#FCFDFF" stroke="#DBE5F2" stroke-width="1.1"/>
+    <circle cx="904" cy="390" r="9" fill="#5B7FA8"/><text x="904" y="393.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">4</text><text class="st" x="920" y="394" font-weight="600" fill="#1E293B">system_config</text>
+    <text class="tag" x="896" y="414">BILLING_CURRENCY = CNY</text>
+    <text class="tag" x="896" y="432">供计费与价格展示使用</text>
+    <text class="tag" x="896" y="452">写一次，后续不再覆盖</text>
+
+    <rect x="1130" y="372" width="270" height="98" rx="10" fill="#FCFDFF" stroke="#DBE5F2" stroke-width="1.1"/>
+    <circle cx="1154" cy="390" r="9" fill="#5B7FA8"/><text x="1154" y="393.5" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">5</text><text class="st" x="1170" y="394" font-weight="600" fill="#1E293B">完成标记</text>
+    <text class="tag" x="1146" y="414">ONBOARDING_COMPLETED</text>
+    <text class="tag" x="1146" y="432">_ALIYUN / _VOLCANO 各自独立</text>
+    <text class="tag" x="1146" y="452">全部成功才写，失败留痕</text>
+
+    <rect x="40" y="496" width="1360" height="74" rx="11" fill="#FEF5F5" stroke="#FAC4C4" stroke-width="1.2"/>
+    <text class="st" x="60" y="520" fill="#B91C1C" font-weight="600">凭证与权限边界</text>
+    <text class="tag" x="60" y="541" fill="#8A3B3B">① 门户 .env 里的网关管理员账密能读写全站用户与密钥 —— 最高密级凭证，日志里出现一次即等同全站泄露</text>
+    <text class="tag" x="60" y="559" fill="#8A3B3B">② 学校云厂商 Key 只进 providers.api_key（服务端加密流转），不进 .env、不进镜像、不进日志</text>
+      </g>
+  </svg>
+
+  <ul class="notes">
+    <li><b>初始化入口不关闭。</b>再次进入是「重新初始化」：可补选模型、换 Key，完成时间按最后一次重跑刷新，已建的模型不会被删除。</li>
+    <li><b>推荐清单是版本化数据。</b>腾讯云在 <code>src/lib/onboarding/presets/tokenhub-&lt;日期&gt;.json</code>，阿里云 / 火山是手写快照，每家都标注官方文档来源。</li>
+    <li><b>初始化是门户唯一的写网关路径。</b>其余全部是读：模型目录、额度、日志、正文详情、初始化状态都实时打网关 API。</li>
+  </ul>
+</section>
+
+</div>
+</body>
+</html>
