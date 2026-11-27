@@ -26,7 +26,7 @@ const BASE_ENV: Record<string, string> = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
   OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'admin-password',
+  OCTAFUSE_ADMIN_PASSWORD: 'T3st-Admin-Pass-9f2c',
   OCTAFUSE_EXTERNAL_SYSTEM: 'campus-tokenhub',
   SESSION_SECRET: 'auth-validate-test-session-secret-32-chars',
 };

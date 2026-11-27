@@ -3,6 +3,8 @@ import { requireCurrentSession } from '@/lib/auth/current';
 import { resolvePortalAdmin } from '@/lib/auth/admin';
 import { readAdminCandidates } from '@/lib/admin/candidates';
 import { readAdminSubs } from '@/lib/admin/roster';
+import { rosterNoticeKind } from '@/lib/admin/roster-notice';
+import { RosterEmptyNotice } from '@/components/admin/RosterEmptyNotice';
 import { AdminList } from '@/components/admin/AdminList';
 
 export const dynamic = 'force-dynamic';
@@ -25,9 +27,12 @@ export default async function AdminRosterPage() {
     // 候选取不到不影响名单本身的增删，降级成空列表让按钮置灰
     readAdminCandidates({ currentSub: session.sub }).catch(() => []),
   ]);
+  // 名单为空时首个登录者会被认领为全局管理员：只提示，不改认领逻辑
+  const noticeKind = rosterNoticeKind(subs, degraded);
 
   return (
     <div className="flex flex-col gap-4">
+      {noticeKind ? <RosterEmptyNotice kind={noticeKind} /> : null}
       <header>
         <p className="text-[13px] leading-[21px] text-ink-500">
           名单存在共享层 portal_shared.admins 表里；名单里的人都是全局管理员，可以审核成员申请、

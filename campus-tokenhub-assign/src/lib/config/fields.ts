@@ -11,6 +11,7 @@
  */
 
 import { toList } from './parse';
+import { isDangerousSvg, parseLogoDataUrl } from './logo';
 
 export class ConfigValueError extends Error {
   constructor(message: string) {
@@ -472,8 +473,18 @@ export function toConfigValue(field: ConfigField, raw: unknown): ConfigValue {
   const def = descriptor(field);
   switch (def.type) {
     case 'string':
-    case 'image':
-      return asString(def, raw);
+    case 'image': {
+      const value = asString(def, raw);
+      // 与上传接口同口径：设置页直接贴 data URL 时也要过一遍危险特征，
+      // 否则「上传会被拦、手贴能存」就是一条绕过路径（回传虽有 CSP 兜底，但不该靠它）
+      if (value.startsWith('data:image/svg+xml')) {
+        const parsed = parseLogoDataUrl(value);
+        if (parsed && isDangerousSvg(parsed.bytes)) {
+          throw new ConfigValueError(`${def.label} 含有可执行内容（脚本/事件属性），已拒绝保存`);
+        }
+      }
+      return value;
+    }
     case 'number': {
       if (raw === '' || raw === null || raw === undefined) {
         throw new ConfigValueError(`${def.label} 必须是数字`);

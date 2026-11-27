@@ -90,6 +90,8 @@ services:
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
       PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}
+      # 自带 nginx 用 $remote_addr 覆写 X-Forwarded-For；换自建反代（追加 XFF）时必须改 false
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       # 成员账号申请单落盘目录（必须挂卷，否则容器重建即丢全部申请）
       PORTAL_DATA_DIR: /app/.data
       # 本机调试要换成 localhost 地址时，不要改这里：`npm run env:local|lan` 会生成

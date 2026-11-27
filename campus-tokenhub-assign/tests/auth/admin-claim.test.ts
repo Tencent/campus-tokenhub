@@ -21,7 +21,7 @@ function setEnv(overrides: Record<string, string> = {}): void {
     OCTAFUSE_ADMIN_BASE: 'http://127.0.0.1:8789',
     OCTAFUSE_PROXY_BASE: 'http://127.0.0.1:8790',
     OCTAFUSE_ADMIN_USERNAME: 'admin',
-    OCTAFUSE_ADMIN_PASSWORD: 'pw',
+    OCTAFUSE_ADMIN_PASSWORD: 'T3st-Gateway-Pass-9f2c',
     OCTAFUSE_EXTERNAL_SYSTEM: 'school-sso',
     SESSION_SECRET: SECRET,
     ...overrides,

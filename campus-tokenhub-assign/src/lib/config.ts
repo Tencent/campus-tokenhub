@@ -207,6 +207,65 @@ function optional(env: EnvSource, key: string, fallback = ''): string {
   return value && value.trim() ? value.trim() : fallback;
 }
 
+/** ── 网关管理员口令强度 ───────────────────────────────────────────────
+ * 网关管理台能列出全站用户、读 API Key 明文、改供应商 Key，是整条链路的最高权限。
+ * .env.example 里的 `change-me`、compose 早期的 `octafuse123` 在开源后就是公开信息，
+ * 照抄即等于把管理台交出去，因此这里与 SESSION_SECRET 同口径在启动期直接拒绝。
+ */
+const GATEWAY_ADMIN_PASSWORD_MIN = 16;
+/** 示例值 / 常见弱口令：整串匹配（小写比较） */
+const GATEWAY_ADMIN_EXAMPLE_EXACT = new Set([
+  'change-me',
+  'change_me',
+  'changeme',
+  'octafuse123',
+  'replace-me',
+  'password',
+  'passw0rd',
+  'please-change',
+  'admin',
+  'secret',
+  '123456',
+  '12345678',
+]);
+/** 示例值前缀：`.env.example` 习惯用这些前缀提示「请替换」 */
+const GATEWAY_ADMIN_EXAMPLE_PREFIX = /^(please-change|your-|replace-|example)/i;
+
+/**
+ * 校验网关管理员口令，返回去掉首尾空白的值。
+ *
+ * 只拦「明显会被公开猜到」的口令，不做复杂度策略：长度 + 示例值 + 字符种类下限，
+ * 误伤真实口令比漏拦更糟（会把线上部署挡在启动之外）。
+ */
+export function assertGatewayAdminPassword(value: string, username = 'admin'): string {
+  const password = value.trim();
+  const hint = '请改用随机口令（openssl rand -base64 24）';
+  // 先判示例值：`change-me` 这类串同时也不够长，但真正的问题是「它写在公开的示例文件里」，
+  // 报错必须说清这一点，否则运维只会去补长度
+  const lowered = password.toLowerCase();
+  if (GATEWAY_ADMIN_EXAMPLE_EXACT.has(lowered) || GATEWAY_ADMIN_EXAMPLE_PREFIX.test(password)) {
+    throw new Error(
+      `OCTAFUSE_ADMIN_PASSWORD 仍是示例口令（如 change-me / octafuse123），开源后等于公开口令；${hint}`
+    );
+  }
+  if (password.length < GATEWAY_ADMIN_PASSWORD_MIN) {
+    throw new Error(
+      `OCTAFUSE_ADMIN_PASSWORD 至少 ${GATEWAY_ADMIN_PASSWORD_MIN} 个字符（当前 ${password.length} 个）；${hint}`
+    );
+  }
+  if (username.trim() && lowered === username.trim().toLowerCase()) {
+    throw new Error(`OCTAFUSE_ADMIN_PASSWORD 不能与 OCTAFUSE_ADMIN_USERNAME 相同；${hint}`);
+  }
+  // 长度够但字符种类极少（`kkkk…`、`abcdabcd…`）同样是弱口令：8 种以上字符才不会一眼猜中
+  const alphabet = new Set(password).size;
+  if (alphabet < 8) {
+    throw new Error(
+      `OCTAFUSE_ADMIN_PASSWORD 字符种类过少（只有 ${alphabet} 种）：口令空间太小，易被在线爆破；${hint}`
+    );
+  }
+  return password;
+}
+
 function assertUrl(name: string, value: string): string {
   let parsed: URL;
   try {
@@ -379,12 +438,19 @@ export function loadConfig(env: EnvSource = process.env): AppConfig {
   // 日志说「允许」、实际「关闭」，把排障的人带偏过。
   // 真实状态的提示统一放在 instrumentation 里（那里拿到的是 overlay 之后的 cfg）。
 
+  // 网关管理员是最高权限：口令强度必须在这里拦住，不能等被人拿公开默认值登进管理台
+  const octafuseAdminUsername = required(env, 'OCTAFUSE_ADMIN_USERNAME');
+  const octafuseAdminPassword = assertGatewayAdminPassword(
+    required(env, 'OCTAFUSE_ADMIN_PASSWORD'),
+    octafuseAdminUsername
+  );
+
   return {
     octafuse: {
       adminBase: assertUrl('OCTAFUSE_ADMIN_BASE', required(env, 'OCTAFUSE_ADMIN_BASE')),
       proxyBase: assertUrl('OCTAFUSE_PROXY_BASE', required(env, 'OCTAFUSE_PROXY_BASE')),
-      adminUsername: required(env, 'OCTAFUSE_ADMIN_USERNAME'),
-      adminPassword: required(env, 'OCTAFUSE_ADMIN_PASSWORD'),
+      adminUsername: octafuseAdminUsername,
+      adminPassword: octafuseAdminPassword,
       externalSystem: required(env, 'OCTAFUSE_EXTERNAL_SYSTEM'),
     },
     defaults: {

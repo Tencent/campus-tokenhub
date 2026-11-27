@@ -16,6 +16,8 @@ import {
 	resetLoginRateLimit,
 } from '@/lib/login-rate-limit';
 import { getClientIp, logAdminAuthEvent } from '@/lib/security-log';
+import { resolveAdminAuthMode } from '@/lib/admin-auth-mode';
+import { ADMIN_PASSWORD_LOGIN_ENV, resolveAdminPasswordLogin } from '@/lib/admin-password-policy';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,6 +60,29 @@ export async function POST(request: Request) {
       return Response.json(
         { success: false, message: 'Server configuration error' },
         { status: 500 }
+      );
+    }
+
+    // portal 模式下这条账密通道默认关闭：开源后 `.env.example` 与 compose 里的默认口令
+    // 就是公开信息，只隐藏 UI 不拦接口等于把管理台交出去。要留应急回滚路径，
+    // 显式设 ADMIN_AUTH_MODE=password/both，或 ADMIN_PASSWORD_LOGIN=on。
+    const decision = resolveAdminPasswordLogin({
+      mode: resolveAdminAuthMode(),
+      passwordLogin: process.env[ADMIN_PASSWORD_LOGIN_ENV],
+      username: adminUsername,
+      password: adminPassword,
+    });
+    if (!decision.allowed) {
+      // 不计入失败限流：这是配置层面的拒绝，攻击者不该能用它把管理员刷进锁定状态
+      logAdminAuthEvent('admin.auth.login_blocked', request, { username: String(username ?? '') });
+      console.warn(`[admin] 账密登录已拒绝：${decision.reason}`);
+      return Response.json(
+        {
+          success: false,
+          code: decision.reason,
+          message: '密码登录已关闭，请使用门户 SSO 登录',
+        },
+        { status: 403 }
       );
     }
 

@@ -11,8 +11,12 @@ export async function register(): Promise<void> {
   const { getConfig } = await import('@/lib/config');
   const { ensureConfigOverlayLoaded, readOverlayStatus } = await import('@/lib/config/overlay');
   const { decideStartupAuth, validateAuthSection } = await import('@/lib/config/auth-validate');
-  const { credentialFingerprint, localAdminFingerprint, seedLocalAdminCredentialFromEnv } =
-    await import('@/lib/auth/local-admin');
+  const {
+    credentialFingerprint,
+    localAdminFingerprint,
+    passwordLoginRiskNotice,
+    seedLocalAdminCredentialFromEnv,
+  } = await import('@/lib/auth/local-admin');
 
   // 启动层：先等 overlay 再校验最终值。DB 不可达/超时返回 false，不阻塞启动
   //（fail-closed 红线由认证决策守卫承载，启动层只尽早发现，避免 DB 抖动误杀启动）。
@@ -58,6 +62,16 @@ export async function register(): Promise<void> {
       `[portal] 配置校验通过：数据库 ${ownSchema()}，认证方式 ${cfg.auth.provider}`
     );
 
+    // 客户端 IP 来源：漏配 TRUST_PROXY_HEADERS 时所有请求共用一个限流桶，必须在日志里可见
+    const { trustProxyHeaders } = await import('@/lib/net/client-ip');
+    console.log(
+      `[portal] 客户端 IP 来源：${
+        trustProxyHeaders()
+          ? '反向代理头（TRUST_PROXY_HEADERS=true）'
+          : '连接地址（未信任代理头，所有请求共用一个限流桶）'
+      }`
+    );
+
     if (!cfg.portal.publicBaseUrl) {
       console.warn(
         '[portal] 未配置 PUBLIC_BASE_URL：302 与同源校验会回退到请求 Host 头（可被伪造），线上必须配置'
@@ -97,6 +111,9 @@ export async function register(): Promise<void> {
           '请在 PORTAL_ADMIN_USERNAME / PORTAL_ADMIN_PASSWORD 或设置页补齐'
       );
     }
+    // 密码登录长期可用会绕过学校 MFA 与离校回收：启动时就把风险喊出来
+    const passwordRisk = passwordLoginRiskNotice(cfg);
+    if (passwordRisk) console.warn(`[portal] ${passwordRisk}`);
   } catch (error) {
     console.error(`[portal] 启动失败：${error instanceof Error ? error.message : String(error)}`);
     console.error('[portal] 请检查环境变量，参考 .env.example');

@@ -124,6 +124,14 @@ const LIMITS = {
   portalUser: { limit: 240, windowMs: 60_000 },
   /** 未登录打 API：正常浏览器不会这样，收紧到每分钟 60 次 */
   portalAnon: { limit: 60, windowMs: 60_000 },
+  /** 引导期账密登录：暴力破解面，收紧到 20 次/分钟/IP */
+  passwordAuth: { limit: 20, windowMs: 60_000 },
+  /**
+   * SSO 回调：这是正常登录流，学校出口常常是同一个 NAT IP。
+   * 若与 password 共用一个 10~20 次/分钟的桶，一次机房课或家长会集中登录就会把整校挡在门外，
+   * 因此单独放宽到 60 次/分钟/IP。
+   */
+  callbackAuth: { limit: 60, windowMs: 60_000 },
 } satisfies Record<string, Limit>;
 
 /** 进程内固定窗口计数；多副本时各副本各算一份，够挡住单机刷 */
@@ -166,6 +174,25 @@ function hit(key: string, { limit, windowMs }: Limit): boolean {
   if (bucket.count >= limit) return false;
   bucket.count += 1;
   return true;
+}
+
+/**
+ * 认证端点的独立桶。
+ *
+ * 这两个前缀在 `isPublic()` 里是免会话的，不单独限流就等于「免认证 + 无限次」：
+ * `/api/auth/password` 是暴力破解面，`/api/auth/callback` 每次失败都会向上游 IdP 发 token 请求。
+ * 刻意**不包含** `/api/auth/check`（管理台每次加载都会调）与 `/login` 页面本身，避免限死正常流程。
+ */
+const AUTH_LIMIT_RULES: readonly { prefix: string; key: string; rule: Limit }[] = [
+  { prefix: '/api/auth/password', key: 'auth:pwd', rule: LIMITS.passwordAuth },
+  { prefix: '/api/auth/callback', key: 'auth:cb', rule: LIMITS.callbackAuth },
+];
+
+function authLimitFor(pathname: string): { key: string; rule: Limit } | null {
+  const matched = AUTH_LIMIT_RULES.find(
+    (item) => pathname === item.prefix || pathname.startsWith(`${item.prefix}/`)
+  );
+  return matched ? { key: matched.key, rule: matched.rule } : null;
 }
 
 /**
@@ -241,6 +268,9 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   }
 
   if (isPublic(pathname)) {
+    // 公开路径里只有这两个认证端点单独计数：免会话 + 无限次 = 爆破面与 IdP 放大面
+    const authLimit = authLimitFor(pathname);
+    if (authLimit && !hit(`${authLimit.key}:${clientIp(request)}`, authLimit.rule)) return tooMany();
     // 文档响应要给真实 Origin（见 isDocumentPath 注释），接口保持 no-referrer
     return apply(NextResponse.next(), isDocumentPath(pathname));
   }

@@ -143,6 +143,8 @@ server {
     location /tokenhub/admin/ {
         # 首次访问下发中文默认语言 Cookie（见文件顶部 map）
         add_header Set-Cookie $admin_locale_cookie always;
+        # 管理台登录接口是 JSON 解析，超大 body 同样吃内存；正常管理请求 1m 足够
+        client_max_body_size 1m;
         # 管理台持有全站用户与密钥的读写权限，对外暴露时必须收敛来源。
         # 注意：本服务前面还有 CLB，这里的 $remote_addr 是 **CLB 的地址**，
         # 所以按客户端 IP 收敛优先用 CLB 的访问控制；要在 nginx 兜一层需先配
@@ -160,6 +162,8 @@ server {
         proxy_pass http://$portal_backend;
     }
     location /tokenhub/portal/ {
+        # 门户只有表单与配置提交，1m 足够；server 级的 100m 只留给 /tokenhub/v1 模型代理
+        client_max_body_size 1m;
         proxy_pass http://$portal_backend;
     }
 

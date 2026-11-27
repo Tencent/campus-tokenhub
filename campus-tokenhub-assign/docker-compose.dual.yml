@@ -67,6 +67,8 @@ services:
       PORTAL_SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET_MUST_BE_SET}
       PORTAL_LOGIN_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}/tokenhub/portal/login
       PORTAL_LOGOUT_URL: http://portal:3000/tokenhub/portal/api/auth/logout
+      # 双站部署默认走门户 SSO；账密通道默认关闭，仅应急回滚时设 on
+      ADMIN_PASSWORD_LOGIN: ${ADMIN_PASSWORD_LOGIN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,6 +135,7 @@ services:
       NEXT_PUBLIC_PROXY_BASE: ${NEXT_PUBLIC_PROXY_BASE:-http://localhost:8790}
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}
       PORTAL_DATA_DIR: /app/.data
     volumes:
@@ -184,6 +187,7 @@ services:
       # 成员站没有网关：不注入任何 OCTAFUSE_*，也不依赖 gateway 服务
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}
       PORTAL_DATA_DIR: /app/.data
     volumes:

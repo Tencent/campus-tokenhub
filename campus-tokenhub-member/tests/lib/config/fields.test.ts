@@ -139,3 +139,22 @@ describe('config fields', () => {
     expect(fromEnv('defaultBudgetMax', { DEFAULT_BUDGET_MAX: '150' })).toBe(150);
   });
 });
+
+describe('toConfigValue：Logo 写入校验', () => {
+  function dataUrl(source: string): string {
+    return `data:image/svg+xml;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
+  }
+
+  it('含脚本/事件属性的 SVG 被拒绝（与上传接口同口径）', () => {
+    expect(() => toConfigValue('logo', dataUrl('<svg/onload=alert(1)>'))).toThrow(ConfigValueError);
+    expect(() =>
+      toConfigValue('logo', dataUrl('<svg><a href="&#106;avascript:alert(1)"/></svg>'))
+    ).toThrow(ConfigValueError);
+  });
+
+  it('正常 SVG 与普通字符串照旧保存', () => {
+    const safe = dataUrl('<svg><path d="M0 0h10v10z"/></svg>');
+    expect(toConfigValue('logo', safe)).toBe(safe);
+    expect(toConfigValue('logo', '')).toBe('');
+  });
+});
