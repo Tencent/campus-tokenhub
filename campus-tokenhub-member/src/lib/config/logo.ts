@@ -75,15 +75,39 @@ export function sniffLogoType(bytes: Buffer): LogoType | null {
 }
 
 /**
+ * 数字实体（`&#106;` / `&#x6a;`）解码：`href="&#106;avascript:..."` 在属性值里
+ * 看起来不是 `javascript:`，但浏览器解析标签时会先解码，因此必须解码后再判。
+ * 只解数字实体（不碰命名实体，避免把 `&amp;` 之类改写后误判）。
+ */
+function decodeNumericEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex: string) => {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&#(\d+);?/g, (_, dec: string) => {
+      const code = Number.parseInt(dec, 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    });
+}
+
+/** href / xlink:href 里的脚本协议（解码后判断，允许空白与大小写变形） */
+const DANGEROUS_HREF = /(?:href|xlink:href)\s*=\s*["']?[^"'>]*?(?:javascript|vbscript|data)\s*:/i;
+
+/**
  * SVG 里出现可执行内容时直接拒绝。
  *
- * 只做「明显危险」的拦截（脚本、事件属性、foreignObject、外链引用），
- * 真正的兜底是回传时的 CSP sandbox。
+ * 只做「明显危险」的拦截（脚本、事件属性、foreignObject、外链脚本协议），
+ * 真正的兜底是回传时的 CSP sandbox。上传与设置页写入两条路径共用本函数。
  */
 export function isDangerousSvg(bytes: Buffer): boolean {
-  const text = bytes.toString('utf8');
-  return /<script[\s>]/i.test(text) ||
-    /\son[a-z]+\s*=/i.test(text) ||
+  const raw = bytes.toString('utf8');
+  const text = decodeNumericEntities(raw);
+  return (
+    /<script[\s>]/i.test(text) ||
+    // `[\s/]` 覆盖 `<svg/onload=`：`/` 不是空白，旧正则漏了自闭合写法
+    /[\s/]on[a-z]+\s*=/i.test(text) ||
     /<foreignObject[\s>]/i.test(text) ||
-    /(?:href|xlink:href)\s*=\s*["']\s*(?:javascript:|data:)/i.test(text);
+    DANGEROUS_HREF.test(text)
+  );
 }

@@ -149,13 +149,37 @@ describe('maskSecrets', () => {
 });
 
 describe('clientIp', () => {
+  it('未开启 TRUST_PROXY_HEADERS 时忽略代理头', () => {
+    const previous = process.env.TRUST_PROXY_HEADERS;
+    delete process.env.TRUST_PROXY_HEADERS;
+    try {
+      expect(clientIp(new Headers({ 'x-forwarded-for': '1.2.3.4', 'x-real-ip': '5.6.7.8' }))).toBeNull();
+    } finally {
+      if (previous !== undefined) process.env.TRUST_PROXY_HEADERS = previous;
+    }
+  });
+
   it('优先取 x-forwarded-for 的第一段', () => {
-    const headers = new Headers({ 'x-forwarded-for': '1.2.3.4, 10.0.0.1' });
-    expect(clientIp(headers)).toBe('1.2.3.4');
+    const previous = process.env.TRUST_PROXY_HEADERS;
+    process.env.TRUST_PROXY_HEADERS = 'true';
+    try {
+      const headers = new Headers({ 'x-forwarded-for': '1.2.3.4, 10.0.0.1' });
+      expect(clientIp(headers)).toBe('1.2.3.4');
+    } finally {
+      if (previous === undefined) delete process.env.TRUST_PROXY_HEADERS;
+      else process.env.TRUST_PROXY_HEADERS = previous;
+    }
   });
 
   it('回退到 x-real-ip，再取不到返回 null', () => {
-    expect(clientIp(new Headers({ 'x-real-ip': '5.6.7.8' }))).toBe('5.6.7.8');
-    expect(clientIp(new Headers())).toBeNull();
+    const previous = process.env.TRUST_PROXY_HEADERS;
+    process.env.TRUST_PROXY_HEADERS = 'true';
+    try {
+      expect(clientIp(new Headers({ 'x-real-ip': '5.6.7.8' }))).toBe('5.6.7.8');
+      expect(clientIp(new Headers())).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.TRUST_PROXY_HEADERS;
+      else process.env.TRUST_PROXY_HEADERS = previous;
+    }
   });
 });

@@ -11,8 +11,12 @@ export async function register(): Promise<void> {
   const { ensureConfigOverlayLoaded, readOverlayStatus } = await import('@/lib/config/overlay');
   const { decideStartupAuth, validateAuthSection } = await import('@/lib/config/auth-validate');
   const { RETIRED_ENV_KEYS } = await import('@/lib/config/fields');
-  const { credentialFingerprint, localAdminFingerprint, seedLocalAdminCredentialFromEnv } =
-    await import('@/lib/auth/local-admin');
+  const {
+    credentialFingerprint,
+    localAdminFingerprint,
+    passwordLoginRiskNotice,
+    seedLocalAdminCredentialFromEnv,
+  } = await import('@/lib/auth/local-admin');
 
   // 运行期配置已改为只存数据库：老部署的 .env 里残留这些变量时明确提示，
   // 避免「改了 .env 却没生效」被误判成故障。
@@ -66,6 +70,16 @@ export async function register(): Promise<void> {
 
     console.log(
       `[portal] 配置校验通过：网关 ${cfg.octafuse.adminBase}，认证方式 ${cfg.auth.provider}`
+    );
+
+    // 客户端 IP 来源：漏配 TRUST_PROXY_HEADERS 时所有请求共用一个限流桶，必须在日志里可见
+    const { trustProxyHeaders } = await import('@/lib/net/client-ip');
+    console.log(
+      `[portal] 客户端 IP 来源：${
+        trustProxyHeaders()
+          ? '反向代理头（TRUST_PROXY_HEADERS=true）'
+          : '连接地址（未信任代理头，所有请求共用一个限流桶）'
+      }`
     );
 
     if (!cfg.portal.publicBaseUrl) {
@@ -128,6 +142,9 @@ export async function register(): Promise<void> {
           '请在 PORTAL_ADMIN_USERNAME / PORTAL_ADMIN_PASSWORD 或设置页补齐'
       );
     }
+    // 密码登录长期可用会绕过学校 MFA 与离校回收：启动时就把风险喊出来
+    const passwordRisk = passwordLoginRiskNotice(cfg);
+    if (passwordRisk) console.warn(`[portal] ${passwordRisk}`);
 
     // ---- 部署管理员凭据的来源（共享配置 > .env） ----
     //

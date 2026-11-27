@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import type { GatewayDatabaseClient } from '@octafuse/core';
 import { resetAdminAuthModeWarnings } from './admin-auth-mode';
 import { resolveAdminAuthState } from './admin-auth-state';
 import { hashSessionToken } from './auth';
@@ -45,17 +46,24 @@ const noSession = {
 		touchApiKey: async () => undefined,
 		getValidSession: async () => null,
 	},
-	// 门户会话的 admin 声明要按「当前口径」复核：默认把测试身份当作已认领的 owner
+	// 门户会话的 admin 声明要按「当前口径」复核：名单是唯一来源（读不到即拒绝），
+	// 所以这里给一个能读到名单的连接，名单里放本测试身份
 	systemConfig: {
-		getConfig: async (key: string) => (key === 'ONBOARDING_OWNER' ? 'teacher-1' : null),
+		getConfig: async () => null,
 	},
 };
+
+const rosterClient = {
+	driver: 'postgres',
+	raw: async () => [{ sub: 'teacher-1' }],
+} as unknown as GatewayDatabaseClient;
 
 function stateFor(overrides: Partial<Parameters<typeof resolveAdminAuthState>[0]> = {}) {
 	return resolveAdminAuthState({
 		adminSessionToken: null,
 		portalSessionToken: null,
 		repositories: noSession,
+		client: rosterClient,
 		loginUrl: LOGIN_URL,
 		...overrides,
 	});
@@ -172,13 +180,17 @@ describe('resolveAdminAuthState', () => {
 		assert.equal(state.mode, 'password');
 	});
 
-	it('撤权后旧门户会话不再放行：owner 已换人', async () => {
+	it('撤权后旧门户会话不再放行：已不在名单里', async () => {
 		const state = await stateFor({
 			portalSessionToken: portalToken(),
 			repositories: {
 				adminAccess: { ...noSession.adminAccess },
-				systemConfig: { getConfig: async () => 'someone-else' },
+				systemConfig: { getConfig: async () => null },
 			},
+			client: {
+				driver: 'postgres',
+				raw: async () => [{ sub: 'someone-else' }],
+			} as unknown as GatewayDatabaseClient,
 		});
 
 		assert.equal(state.authenticated, false);
@@ -196,13 +208,17 @@ describe('resolveAdminAuthState', () => {
 		assert.equal(state.via, 'portal');
 	});
 
-	it('owner 未认领时拒绝（fail-closed）', async () => {
+	it('名单为空时拒绝（fail-closed，不再回落 owner）', async () => {
 		const state = await stateFor({
 			portalSessionToken: portalToken(),
 			repositories: {
 				adminAccess: { ...noSession.adminAccess },
 				systemConfig: { getConfig: async () => null },
 			},
+			client: {
+				driver: 'postgres',
+				raw: async () => [],
+			} as unknown as GatewayDatabaseClient,
 		});
 
 		assert.equal(state.authenticated, false);

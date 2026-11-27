@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
+import type { GatewayDatabaseClient } from '@octafuse/core';
 import {
 	hasAdminPermission,
 	normalizeAdminPermissions,
@@ -232,16 +233,22 @@ const emptyRepositories = {
 		touchApiKey: async () => undefined,
 		getValidSession: async () => null,
 	},
-	// 门户会话要按当前 owner 复核：把测试身份当作已认领的 owner
-	systemConfig: { getConfig: async (key: string) => (key === 'ONBOARDING_OWNER' ? 'teacher-1' : null) },
+	// 门户会话要按当前名单复核（读不到即拒绝）：测试里用下面的 rosterClient 提供名单
+	systemConfig: { getConfig: async () => null },
 };
+
+/** 名单是唯一权威来源：读得到且命中才放行 */
+const rosterClient = {
+	driver: 'postgres',
+	raw: async () => [{ sub: 'teacher-1' }],
+} as unknown as GatewayDatabaseClient;
 
 test('portal 模式下管理员门户会话映射为 console principal', async () => {
 	await withAuthEnv('portal', PORTAL_SECRET, async () => {
 		assert.deepEqual(
 			await authenticateAdminRequest(new Request('https://admin.test/api/admin/users', {
 				headers: { cookie: `portal_session=${portalToken()}` },
-			}), emptyRepositories),
+			}), emptyRepositories, rosterClient),
 			{ type: 'console', id: 'console:teacher@school.edu', username: 'teacher@school.edu' },
 		);
 	});
@@ -273,11 +280,11 @@ test('过期 admin_session 不短路，仍可凭门户会话放行（回归）',
 				// 只有 stale 会话能查到，且判定为「已过期」→ 返回 null
 				getValidSession: async (tokenHash: string) => tokenHash === staleHash ? null : null,
 			},
-			systemConfig: { getConfig: async (key: string) => (key === 'ONBOARDING_OWNER' ? 'teacher-1' : null) },
+			systemConfig: { getConfig: async () => null },
 		};
 		const principal = await authenticateAdminRequest(new Request('https://admin.test/api/admin/users', {
 			headers: { cookie: `admin_session=stale-session; portal_session=${portalToken()}` },
-		}), repositories);
+		}), repositories, rosterClient);
 		assert.deepEqual(principal, {
 			type: 'console', id: 'console:teacher@school.edu', username: 'teacher@school.edu',
 		});

@@ -116,7 +116,9 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
       PORT: '8789'
       ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:-octafuse123}
+      # 必填：不再给 octafuse123 之类的默认值。开源后默认值等于公开口令，
+      # 漏配时宁可启动失败，也不要带着「人人皆知的管理员口令」把管理台跑到公网。
+      ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
       # 走 HTTPS（CLB 终止 TLS）时置 1，否则浏览器会丢弃会话 Cookie
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-}
       # 与 build.args 同一个值：运行期不参与路由，只给入口脚本做“镜像前缀自检”
@@ -131,6 +133,9 @@ services:
       PORTAL_LOGOUT_URL: ${PORTAL_LOGOUT_URL:-}
       # portal（默认）/ password / both；改这里即可回滚，无需回滚代码
       ADMIN_AUTH_MODE: ${ADMIN_AUTH_MODE:-portal}
+      # portal 模式下账密登录默认关闭（开源后默认口令等于公开口令）；
+      # 仅在确需应急回滚账密通道时设 on
+      ADMIN_PASSWORD_LOGIN: ${ADMIN_PASSWORD_LOGIN:-}
       # 管理台自己会读 portal_shared.admins 复核撤权，不再需要邮箱白名单透传
       # 管理后台持有全站用户与密钥的读写权限：只绑本机回环，对外一律经 nginx（/tokenhub/admin）。
       # 正文详情接口的裁剪上限：与 gateway-proxy 共用一个值，避免「存 64KB、详情只给更少」
@@ -207,6 +212,9 @@ services:
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
       PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}
+      # 自带 nginx 用 $remote_addr 覆写 X-Forwarded-For，因此这里默认信任代理头；
+      # 前面换成自建反代（追加 XFF）时必须改成 false，否则可伪造 IP 绕过限流
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       # 成员账号申请单落盘目录（必须挂卷，否则容器重建即丢全部申请）
       PORTAL_DATA_DIR: /app/.data
       # 本机调试要换成 localhost 地址时，不要改这里：`npm run env:local|lan` 会生成

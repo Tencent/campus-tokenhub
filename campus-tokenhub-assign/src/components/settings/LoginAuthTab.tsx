@@ -20,7 +20,7 @@ import {
   type RestrictFieldName,
 } from '@/lib/config/fields';
 import type { SettingsPayload } from '@/lib/config/settings-view';
-import type { PasswordLoginState } from '@/lib/auth/local-admin';
+import { PASSWORD_LOGIN_RISK_NOTICE, type PasswordLoginState } from '@/lib/auth/local-admin';
 import { FieldRow, NumberInput, SecretInput, SelectInput, TextInput, Toggle, FIELD_INPUT_CLASS } from './fields';
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -264,10 +264,15 @@ export function LoginAuthTab({
         {renderField('localAdminUsername')}
         {renderField('localAdminPassword')}
         {loginState.password === 'available' ? (
-          <p className="text-xs text-ink-500">
-            当前状态：<span className="font-medium text-ink-800">可用</span>
-            {loginState.ssoConfigured ? '（SSO 已配齐，调试通过后可改为 off 关闭）' : ''}
-          </p>
+          <>
+            <p className="text-xs text-ink-500">
+              当前状态：<span className="font-medium text-ink-800">可用</span>
+              {loginState.ssoConfigured ? '（SSO 已配齐，调试通过后可改为 off 关闭）' : ''}
+            </p>
+            {(draft.localAdminMode || 'auto') === 'auto' ? (
+              <p className="mt-1 text-xs leading-relaxed text-amber-700">{PASSWORD_LOGIN_RISK_NOTICE}</p>
+            ) : null}
+          </>
         ) : (
           <p className="text-xs text-ink-500">
             当前状态：<span className="font-medium text-ink-800">不可用</span>

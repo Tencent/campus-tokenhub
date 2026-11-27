@@ -15,7 +15,7 @@ const baseEnv = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
   OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'pw',
+  OCTAFUSE_ADMIN_PASSWORD: 'T3st-Gateway-Pass-9f2c',
   OCTAFUSE_EXTERNAL_SYSTEM: 'school-sso',
   SESSION_SECRET: 'K7q2mZ9rT4wX8bN3vF6hJ1sL5pY0cA2d',
 };

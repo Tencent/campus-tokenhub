@@ -42,17 +42,21 @@ function formValue(form: FormData | null, key: string): string {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  // 登录是安全决策点：先强制重读一次配置。
-  // 内存快照有 30 秒 TTL，多副本时「刚在另一个副本把 SSO 配齐」的瞬间若用旧快照判定，
-  // 会把已经该关闭的入口又放行一次。登录本身频率低，这次读库完全值得。
-  await refreshConfigOverlay();
-  const cfg = getConfig();
+  // 处理顺序本身就是防护，调整前先读 tests/api/auth-password.test.ts 的顺序断言：
+  //   1) 同源校验 —— 不读 body、不查库；
+  //   2) 配置刷新 + 「是否允许密码登录」判定 —— 入口关着时连 body 都不解析；
+  //   3) 按 IP 限流 —— 先于 multipart 解析，避免被大 body 打成内存/CPU 放大面；
+  //   4) 解析 body 并校验口令。
+  // 这条路由在 proxy 里是公开路径，任何人可提交任意大小的表单；旧顺序「先解析再判状态」
+  // 等于给了一条不需要口令的资源消耗面。
   const ip = clientIp(request.headers);
   const ua = request.headers.get('user-agent');
 
-  const form = await request.formData().catch(() => null);
-  const rawNext = formValue(form, 'next');
-  const rawDest = formValue(form, 'dest');
+  // body 解析前的失败也要能把用户带回原目标：先从 query 兜底，解析成功后再用表单值覆盖
+  const queryNext = request.nextUrl.searchParams.get('next') ?? '';
+  const queryDest = request.nextUrl.searchParams.get('dest') ?? '';
+  let rawNext = queryNext;
+  let rawDest = queryDest;
 
   // 失败一律回登录页：带上 next / dest 让用户停在原目标上重试
   const backToLogin = (code: string): NextResponse => {
@@ -77,6 +81,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     throw error;
   }
 
+  // 登录是安全决策点：先强制重读一次配置。
+  // 内存快照有 30 秒 TTL，多副本时「刚在另一个副本把 SSO 配齐」的瞬间若用旧快照判定，
+  // 会把已经该关闭的入口又放行一次。登录本身频率低，这次读库完全值得。
+  await refreshConfigOverlay();
+  const cfg = getConfig();
+
   const state = passwordLoginState(cfg);
   if (state !== 'available') {
     // disabled_by_switch 对调用方就是「这个入口关了」；unconfigured 单独给码，便于部署方区分
@@ -90,6 +100,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (error instanceof PasswordRateLimitError) return fail('password_rate_limited');
     throw error;
   }
+
+  const form = await request.formData().catch(() => null);
+  rawNext = formValue(form, 'next') || queryNext;
+  rawDest = formValue(form, 'dest') || queryDest;
 
   const username = formValue(form, 'username');
   const password = formValue(form, 'password');

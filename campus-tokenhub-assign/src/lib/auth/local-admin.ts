@@ -53,6 +53,21 @@ export function canUsePasswordLogin(cfg: AppConfig = getConfig()): boolean {
   return passwordLoginState(cfg) === 'available';
 }
 
+/** 密码登录的风险提示文案（登录页、设置页、启动日志共用同一份，避免三处说法不一致） */
+export const PASSWORD_LOGIN_RISK_NOTICE =
+  '账号密码登录会绕过学校统一认证的 MFA 与离校回收：确认学校账号能登录后，请把「账号密码登录」改为 off';
+
+/**
+ * 需要展示风险提示时返回文案，否则返回 null。
+ *
+ * 只在「此刻真的能用」且运维没有显式关掉（mode=auto）时提示：
+ * mode=on 是运维的显式选择，不再劝；off / unconfigured 根本没有入口可提示。
+ */
+export function passwordLoginRiskNotice(cfg: AppConfig = getConfig()): string | null {
+  if (passwordLoginState(cfg) !== 'available') return null;
+  return cfg.portal.localAdmin.mode === 'auto' ? PASSWORD_LOGIN_RISK_NOTICE : null;
+}
+
 function digest(value: string): Buffer {
   return createHash('sha256').update(value, 'utf8').digest();
 }

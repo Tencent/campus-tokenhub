@@ -58,6 +58,8 @@
 - 管理台登录支持复用门户 SSO 会话（`portal_session`，HS256 验签 + `purpose=portal-session` + `admin=true`），保留 Bearer 管理密钥与账号密码两种方式
   - `packages/admin/lib/portal-session.ts`、`admin-auth-mode.ts`、`admin-auth-state.ts`、`admin-auth-coordinator.ts`、`auth.ts`
 - `/api/auth/check` 改为四态返回并恒为 200，`mode` 由运行期 `ADMIN_AUTH_MODE` 控制
+- portal 模式下账密登录默认关闭（2026-11-27）：`/api/auth/login` 按 `ADMIN_AUTH_MODE` × `ADMIN_PASSWORD_LOGIN` × 口令强度判定，未显式 `ADMIN_PASSWORD_LOGIN=on` 或口令为公开示例值（`change-me` / `octafuse123` 等）时返回 403 且不签发会话
+  - `packages/admin/lib/admin-password-policy.ts`（新增，含单测）、`app/api/auth/login/route.ts`
 - 登出在配置 `PORTAL_LOGOUT_URL` 时服务端代理门户登出并透传 `Set-Cookie`
   - `packages/admin/lib/portal-logout.ts`、`app/api/auth/logout/route.ts`
 - 管理台登录改为本地限流（`packages/admin/lib/login-rate-limit.ts`），取代上游的 `admin-login-guard` 与 `LoginLockoutDialog`

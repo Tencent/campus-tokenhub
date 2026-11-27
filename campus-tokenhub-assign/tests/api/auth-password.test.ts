@@ -22,6 +22,8 @@ const BASE_ENV: Record<string, string> = {
   SESSION_SECRET: SECRET,
   PORTAL_ADMIN_USERNAME: 'ops-admin',
   PORTAL_ADMIN_PASSWORD: 'bootstrap-password-1234',
+  // 失败锁定按客户端 IP 计数；测试用 X-Forwarded-For 模拟不同来源，因此显式信任代理头
+  TRUST_PROXY_HEADERS: 'true',
 };
 
 /** 设置页已配齐的 SSO：运行期配置只存数据库，用 overlay 而不是 env 提供 */
@@ -192,5 +194,62 @@ describe('POST /api/auth/password', () => {
     const response = await post({ ...GOOD, dest: 'admin', next: '/users' });
 
     expect(response.headers.get('location')).toBe('https://api.example.com/tokenhub/admin/users');
+  });
+});
+
+describe('POST /api/auth/password 处理顺序（先鉴权后解析 body）', () => {
+  /** 记录路由是否真的读取了请求体：body 解析必须发生在同源/状态/限流判定之后 */
+  async function postTrackingBody(
+    fields: Record<string, string>,
+    headers: Record<string, string> = {},
+    query = ''
+  ): Promise<{ response: NextResponse; bodyRead: boolean }> {
+    const { POST } = await import('@/app/api/auth/password/route');
+    const request = new NextRequest(`http://portal.test/api/auth/password${query}`, {
+      method: 'POST',
+      headers: {
+        host: 'portal.test',
+        'content-type': 'application/x-www-form-urlencoded',
+        ...headers,
+      },
+      body: new URLSearchParams(fields).toString(),
+    });
+    let bodyRead = false;
+    request.formData = async () => {
+      bodyRead = true;
+      return new FormData();
+    };
+    const response = await POST(request);
+    return { response, bodyRead };
+  }
+
+  it('跨源请求：直接返回 origin_mismatch，不读 body', async () => {
+    const { response, bodyRead } = await postTrackingBody(GOOD, { origin: 'https://evil.example' });
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toContain('error=origin_mismatch');
+    expect(bodyRead).toBe(false);
+  });
+
+  it('密码登录已关闭：不读 body', async () => {
+    await applyEnv({ PORTAL_ADMIN_LOGIN: 'off' });
+
+    const { response, bodyRead } = await postTrackingBody(GOOD);
+
+    expect(response.headers.get('location')).toContain('error=password_disabled');
+    expect(bodyRead).toBe(false);
+  });
+
+  it('body 未解析时用 query 上的 next 回带目标', async () => {
+    const { response } = await postTrackingBody(GOOD, { origin: 'https://evil.example' }, '?next=/members');
+
+    expect(response.headers.get('location')).toContain('next=%2Fmembers');
+  });
+
+  it('正常请求仍然读取表单并登录', async () => {
+    const { POST } = await import('@/app/api/auth/password/route');
+    const response = await POST(formRequest(GOOD));
+
+    expect(response.cookies.get(SESSION_COOKIE)).toBeDefined();
   });
 });

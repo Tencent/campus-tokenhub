@@ -17,3 +17,13 @@ openspec/
 # 交付物料与一次性对齐清单：仅本地留档，不入库
 **/docs/*.pptx
 **/docs/design-alignment.md
+
+# ---- 真实环境变量 ----
+# 交付包与本地部署都会生成 .env，里面是真实密钥（SESSION_SECRET / 管理员口令 / DB 口令）。
+# 只忽略真实文件；示例文件在下方白名单里保留，方便新部署照抄。
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.dual.example

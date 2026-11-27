@@ -8,7 +8,7 @@
  *
  * 目的只有一个：**门户管理员页加进来的人，管理台必须认**，并且撤权后立即不认。
  * 判定口径与门户 `resolvePortalAdmin` 严格一致：名单是唯一权威来源，
- * 读不到名单才降级到网关里的初始化 owner；邮箱白名单已彻底移除。
+ * 读不到名单即拒绝（fail-closed）；邮箱白名单已彻底移除。
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -79,20 +79,20 @@ describe('isPortalAdminStillAllowed', () => {
 		assert.equal(allowed, false);
 	});
 
-	it('读不到名单表时降级到 owner（共库前提不成立不比改动前更差）', async () => {
+	it('读不到名单表时拒绝（fail-closed，不再回落 owner）', async () => {
 		const allowed = await isPortalAdminStillAllowed(
 			{ sub: OWNER, email: '' },
 			repositories(OWNER),
 			postgresClient(new Error('relation "portal_shared.admins" does not exist')),
 		);
 
-		assert.equal(allowed, true);
+		assert.equal(allowed, false);
 	});
 
-	it('没有连接时降级到 owner', async () => {
+	it('没有连接时（网关独立部署）一律拒绝，机器密钥走 Bearer', async () => {
 		assert.equal(
 			await isPortalAdminStillAllowed({ sub: OWNER, email: '' }, repositories(OWNER)),
-			true,
+			false,
 		);
 		assert.equal(
 			await isPortalAdminStillAllowed({ sub: LISTED, email: '' }, repositories(OWNER)),

@@ -9,7 +9,7 @@ import { WecomQrLogin } from '@/components/auth/WecomQrLogin';
 import { adminReturnUrl, loginReuseTarget, readAdminLoginTarget, sanitizeNextPath } from '@/lib/auth/login';
 import { resolvePortalAdmin } from '@/lib/auth/admin';
 import { getCurrentSession } from '@/lib/auth/current';
-import { passwordLoginState } from '@/lib/auth/local-admin';
+import { passwordLoginRiskNotice, passwordLoginState } from '@/lib/auth/local-admin';
 import { isSsoConfigured } from '@/lib/config/auth-validate';
 import { readableError } from '@/lib/auth/login-errors';
 import {
@@ -240,6 +240,9 @@ export default async function LoginPage({
   const closedByServer = error === 'password_disabled';
   const showSso = !authUnsafe && (ssoConfigured || closedByServer);
   const passwordMode = !authUnsafe && passwordState === 'available' && !closedByServer;
+
+  // auto 且可用时提示风险：这条通道会绕过学校 MFA 与离校回收
+  const passwordRisk = passwordMode && config ? passwordLoginRiskNotice(config) : null;
   const unconfiguredMode = !authUnsafe && !passwordMode && !showSso;
   // 企微协议下，企微客户端内仍走原有 302 网页授权；系统浏览器改为内嵌扫码。
   // Next 16 的 headers() 是 async API，必须在服务端 await 后再判定 UA。
@@ -446,6 +449,9 @@ export default async function LoginPage({
                     className="mt-1.5 h-[46px] w-full rounded-control border border-line bg-white px-3.5 text-[15px] text-ink-900 outline-none transition focus-visible:border-brand-orange focus-visible:ring-4 focus-visible:ring-brand-orange/20"
                   />
                 </label>
+                {passwordRisk ? (
+                  <p className="text-[12px] leading-relaxed text-amber-700">{passwordRisk}</p>
+                ) : null}
                 <button
                   type="submit"
                   className="flex h-[54px] w-full items-center justify-center rounded-control bg-brand-orange text-[15px] font-semibold text-white shadow-cta transition hover:bg-brand-orange-dark focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand-orange/30 active:translate-y-px"
