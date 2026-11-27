@@ -22,6 +22,7 @@
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { getConfig, type AppConfig } from '@/lib/config';
+import { PASSWORD_LOGIN_RISK_NOTICE } from './password-login-notice';
 
 /** 密码登录的三种状态：页面与接口只按这个决定「给不给入口」 */
 export type PasswordLoginState = 'available' | 'disabled_by_switch' | 'unconfigured';
@@ -53,9 +54,8 @@ export function canUsePasswordLogin(cfg: AppConfig = getConfig()): boolean {
   return passwordLoginState(cfg) === 'available';
 }
 
-/** 密码登录的风险提示文案（登录页、设置页、启动日志共用同一份，避免三处说法不一致） */
-export const PASSWORD_LOGIN_RISK_NOTICE =
-  '账号密码登录会绕过学校统一认证的 MFA 与离校回收：确认学校账号能登录后，请把「账号密码登录」改为 off';
+/** 密码登录的风险提示文案：定义在纯模块里（客户端组件也要用，见 password-login-notice.ts） */
+export { PASSWORD_LOGIN_RISK_NOTICE } from './password-login-notice';
 
 /**
  * 需要展示风险提示时返回文案，否则返回 null。

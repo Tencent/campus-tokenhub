@@ -20,7 +20,8 @@ import {
   type RestrictFieldName,
 } from '@/lib/config/fields';
 import type { SettingsPayload } from '@/lib/config/settings-view';
-import { PASSWORD_LOGIN_RISK_NOTICE, type PasswordLoginState } from '@/lib/auth/local-admin';
+import type { PasswordLoginState } from '@/lib/auth/local-admin';
+import { PASSWORD_LOGIN_RISK_NOTICE } from '@/lib/auth/password-login-notice';
 import { FieldRow, NumberInput, SecretInput, SelectInput, TextInput, Toggle, FIELD_INPUT_CLASS } from './fields';
 
 const PROVIDER_LABELS: Record<string, string> = {
