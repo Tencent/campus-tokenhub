@@ -90,8 +90,11 @@ services:
       DATABASE_DRIVER: postgres
       DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
       PORT: '8789'
-      ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:?OCTAFUSE_ADMIN_USERNAME_MUST_BE_SET}
-      ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
+      # 应急账密与门户凭据完全分开：门户只用 OCTAFUSE_ADMIN_API_KEY。
+      # 默认留空，ADMIN_PASSWORD_LOGIN 未显式设 on 时 /api/auth/login 恒 403；
+      # 仅 SSO 故障需回滚时，填强随机口令并同时设 ADMIN_PASSWORD_LOGIN=on，重启管理台。
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_COOKIE_SECURE: ''
       ADMIN_UI_PUBLIC_PATH: /tokenhub/admin
       # 管理台复用门户会话：同 SESSION_SECRET，登录后两边都能进
@@ -139,6 +142,9 @@ services:
     build:
       context: ./campus-tokenhub-assign
       dockerfile: Dockerfile
+      # 共享活动包：包在仓库根，构建上下文仍是门户目录，用命名 context 挂进来
+      additional_contexts:
+        activity: ./packages/portal-activity
       args:
         # 构建期生效：Next 的 basePath 编译进产物，改了必须 --build
         PORTAL_BASE_PATH: ${PORTAL_ASSIGN_BASE_PATH:-/tokenhub/portal}
@@ -161,8 +167,8 @@ services:
       OCTAFUSE_ADMIN_BASE: ${OCTAFUSE_ADMIN_BASE:-http://gateway-admin:8789}
       OCTAFUSE_PROXY_BASE: ${OCTAFUSE_PROXY_BASE:-http://gateway-proxy:8787}
       NEXT_PUBLIC_PROXY_BASE: ${NEXT_PUBLIC_PROXY_BASE:-http://localhost:8790}
-      OCTAFUSE_ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:?OCTAFUSE_ADMIN_USERNAME_MUST_BE_SET}
-      OCTAFUSE_ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
+      # 门户调网关管理接口的集成密钥（不是账号密码），与网关的应急账密互相独立
+      OCTAFUSE_ADMIN_API_KEY: ${OCTAFUSE_ADMIN_API_KEY:?OCTAFUSE_ADMIN_API_KEY_MUST_BE_SET}
       OCTAFUSE_EXTERNAL_SYSTEM: ${OCTAFUSE_EXTERNAL_SYSTEM:-campus-tokenhub}
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
@@ -190,6 +196,9 @@ services:
     build:
       context: ./campus-tokenhub-member
       dockerfile: Dockerfile
+      # 共享活动包：与统一采买站共用同一份包
+      additional_contexts:
+        activity: ./packages/portal-activity
       args:
         # 关键：basePath 必须与 nginx 的成员站前缀一致，nginx 才能按前缀分流，
         # 页面里的 _next 资源与接口才会带正确前缀
@@ -207,7 +216,9 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}
       COOKIE_SECURE: '${COOKIE_SECURE:-false}'
       NEXT_PUBLIC_PROXY_BASE: ${NEXT_PUBLIC_PROXY_BASE:-http://localhost:8790}
-      # 成员站不依赖网关：不注入任何 OCTAFUSE_*
+      # 成员站不依赖网关：env_file 是两站共读的一份，里面有门户的集成密钥，
+      # 这里显式清空，避免 OCTAFUSE_ADMIN_API_KEY 进入根本不读它的成员站容器。
+      OCTAFUSE_ADMIN_API_KEY: ''
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
       PORTAL_ADMIN_LOGIN: ${PORTAL_ADMIN_LOGIN:-auto}

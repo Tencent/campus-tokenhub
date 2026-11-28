@@ -30,6 +30,7 @@ import {
   resetPasswordLoginFailures,
 } from '@/lib/auth/password-rate-limit';
 import { audit, clientIp } from '@/lib/audit';
+import { activityRecorder } from '@/lib/activity/recorder';
 import { getConfig } from '@/lib/config';
 import { refreshConfigOverlay } from '@/lib/config/overlay';
 
@@ -137,6 +138,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     ip,
     ua,
   });
+
+  // 引导期账密登录同样计入活动：方法固定 password，写入失败不影响登录
+  try {
+    await activityRecorder.recordLogin({
+      sub: identity.sub,
+      name: identity.name,
+      email: identity.email,
+      method: 'password',
+    });
+  } catch {
+    // 静默：会话已签发，埋点异常不能影响登录结果
+  }
 
   // 管理台发起的登录：next 是管理台内深链接，基址未配置时留在门户设置页
   const adminTarget = readAdminLoginTarget({ dest: rawDest, next: rawNext });

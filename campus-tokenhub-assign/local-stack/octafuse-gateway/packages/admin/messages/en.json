@@ -188,6 +188,7 @@
 			"providerUsage": "Provider Usage",
 			"userUsage": "User Usage",
 			"reliability": "Reliability",
+			"loginActivity": "Sign-in activity",
 			"config": "Config",
 			"adminApiKeys": "Integration Keys",
 			"maintenance": "Maintenance"
@@ -3656,6 +3657,48 @@
 			"perModelComparison": "Per-model provider comparison",
 			"recentErrors": "Recent errors",
 			"viewAllErrors": "View all error logs"
+		},
+		"loginActivity": {
+			"title": "Sign-in activity",
+			"subtitle": "Sign-ins and page views across both portals, ranked by user.",
+			"kpi": {
+				"logins": "Sign-ins",
+				"loginUsers": "Unique users",
+				"pageViews": "Page views",
+				"pvPerUser": "Views per user",
+				"activeHint": "{count} active users"
+			},
+			"site": {
+				"all": "All portals",
+				"assign": "Unified portal",
+				"member": "Member portal"
+			},
+			"trend": {
+				"title": "Daily trend",
+				"logins": "Sign-ins",
+				"pageViews": "Page views"
+			},
+			"rank": {
+				"title": "Most active users",
+				"search": "Search name or email",
+				"export": "Export CSV"
+			},
+			"columns": {
+				"user": "User",
+				"site": "Portal",
+				"logins": "Sign-ins",
+				"pageViews": "Page views",
+				"activeDays": "Active days",
+				"lastActive": "Last active"
+			},
+			"empty": "No data in the selected range",
+			"rangeTooLong": "The range cannot exceed 90 days",
+			"loadFailed": "Failed to load data",
+			"exportFailed": "Export failed. Please retry.",
+			"retry": "Retry",
+			"disabled": "Sign-in activity is off",
+			"disabledHint": "Turn on “Sign-in activity” in the portal settings to start collecting and showing sign-ins and page views.",
+			"loading": "Loading…"
 		},
 		"columns": {
 			"model": "Model",

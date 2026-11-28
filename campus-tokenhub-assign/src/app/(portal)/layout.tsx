@@ -7,6 +7,9 @@ import { getUser } from '@/lib/gateway/users';
 import { NavigationProgress } from '@/components/portal/NavigationProgress';
 import { Sidebar } from '@/components/portal/Sidebar';
 import { TopBar } from '@/components/portal/TopBar';
+import { VisitTracker } from '@/components/portal/VisitTracker';
+import { isActivityEnabled } from '@/lib/activity/enabled';
+import { appPath } from '@/lib/paths';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,15 +35,21 @@ export default async function PortalLayout({ children }: { children: React.React
   const isAdmin = await resolvePortalAdmin(session);
 
   // 初始化入口常驻给管理员：完成后点进去看到的是完成状态
-  const [showSetup, accountStatus] = await Promise.all([
+  const [showSetup, accountStatus, activityEnabled] = await Promise.all([
     canAccessSetup(session),
     loadAccountStatus(session.octafuse_user_id ?? null),
+    // 设置页「登录数据统计」开关，缺省关闭；关闭时连 VisitTracker 都不挂
+    isActivityEnabled(),
   ]);
 
   // 共享页面（如 /members/admins）的模式由链接上的 `?mode=` 决定，见 Sidebar / TopBar
   return (
     <div className="min-h-screen bg-cream">
       <NavigationProgress />
+      {/* 页面访问上报：只在 pathname 变化时触发，不阻塞渲染 */}
+      {activityEnabled ? (
+        <VisitTracker endpoint={appPath('/api/portal/activity/visit')} />
+      ) : null}
       <Sidebar
         // 侧边栏入口只关心「管理台是否配了公网地址」：没配就不显示。
         // 不能用容器内网地址（gateway-admin:8789）兜底——它是 truthy，会让入口显示出来，

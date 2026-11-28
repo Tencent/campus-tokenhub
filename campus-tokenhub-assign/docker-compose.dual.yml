@@ -57,8 +57,10 @@ services:
       DATABASE_DRIVER: postgres
       DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
       PORT: '8789'
-      ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:?OCTAFUSE_ADMIN_USERNAME_MUST_BE_SET}
-      ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
+      # 应急账密与门户凭据完全分开：门户只用 OCTAFUSE_ADMIN_API_KEY。
+      # 默认留空；只有 ADMIN_PASSWORD_LOGIN=on 时才生效（见下方开关）。
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_COOKIE_SECURE: ''
       # 必须与镜像构建期一致：octafuse-admin:local 是按 /tokenhub/admin 构建的，
       # 入口脚本会做前缀自检，不一致直接 exit 1。运行期不参与路由（nginx 剥前缀）。
@@ -67,7 +69,8 @@ services:
       PORTAL_SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET_MUST_BE_SET}
       PORTAL_LOGIN_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}/tokenhub/portal/login
       PORTAL_LOGOUT_URL: http://portal:3000/tokenhub/portal/api/auth/logout
-      # 双站部署默认走门户 SSO；账密通道默认关闭，仅应急回滚时设 on
+      # 双站部署默认走门户 SSO（portal）；账密通道默认关闭，仅应急回滚时设 on
+      ADMIN_AUTH_MODE: ${ADMIN_AUTH_MODE:-portal}
       ADMIN_PASSWORD_LOGIN: ${ADMIN_PASSWORD_LOGIN:-}
     depends_on:
       postgres:
@@ -106,6 +109,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 共享活动包在仓库根（相对本文件的上两级）
+      additional_contexts:
+        activity: ../packages/portal-activity
       args:
         # **构建期生效**：Next 的 basePath 编译进产物，改了必须 --build
         PORTAL_BASE_PATH: /tokenhub/portal
@@ -128,9 +134,8 @@ services:
       COOKIE_SECURE: '${COOKIE_SECURE:-false}'
       OCTAFUSE_ADMIN_BASE: ${OCTAFUSE_ADMIN_BASE:-http://gateway-admin:8789}
       OCTAFUSE_PROXY_BASE: ${OCTAFUSE_PROXY_BASE:-http://gateway-proxy:8787}
-      # 统一采买站用网关开户，这三项是配置必填项（不连通也能启动，只是网关相关页面无数据）
-      OCTAFUSE_ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:?OCTAFUSE_ADMIN_USERNAME_MUST_BE_SET}
-      OCTAFUSE_ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
+      # 统一采买站用网关开户：门户只持集成密钥，不再持网关管理员账密
+      OCTAFUSE_ADMIN_API_KEY: ${OCTAFUSE_ADMIN_API_KEY:?OCTAFUSE_ADMIN_API_KEY_MUST_BE_SET}
       OCTAFUSE_EXTERNAL_SYSTEM: ${OCTAFUSE_EXTERNAL_SYSTEM:-campus-tokenhub}
       NEXT_PUBLIC_PROXY_BASE: ${NEXT_PUBLIC_PROXY_BASE:-http://localhost:8790}
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
@@ -167,6 +172,9 @@ services:
     build:
       context: ../campus-tokenhub-member
       dockerfile: Dockerfile
+      # 共享活动包在仓库根（相对本文件的上两级）
+      additional_contexts:
+        activity: ../packages/portal-activity
       args:
         PORTAL_BASE_PATH: /tokenhub/member
     image: campus-tokenhub-member:dual
@@ -184,7 +192,9 @@ services:
       PORTAL_COOKIE_DOMAIN: ${PORTAL_COOKIE_DOMAIN:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL_MUST_BE_SET}
       COOKIE_SECURE: '${COOKIE_SECURE:-false}'
-      # 成员站没有网关：不注入任何 OCTAFUSE_*，也不依赖 gateway 服务
+      # 成员站没有网关，也不依赖 gateway 服务：env_file 是两站共读的一份，
+      # 里面有门户集成密钥，这里显式清空，避免高价值密钥进入根本不读它的容器。
+      OCTAFUSE_ADMIN_API_KEY: ''
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}

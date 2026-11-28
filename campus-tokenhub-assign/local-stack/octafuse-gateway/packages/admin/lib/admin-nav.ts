@@ -24,6 +24,7 @@ export type AdminNavNameKey =
 	| 'providerUsage'
 	| 'userUsage'
 	| 'reliability'
+	| 'loginActivity'
 	| 'adminApiKeys'
 	| 'config'
 	| 'maintenance';
@@ -83,6 +84,7 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
 			{ nameKey: 'providerUsage', href: '/gateway/analytics/providers' },
 			{ nameKey: 'userUsage', href: '/gateway/analytics/users' },
 			{ nameKey: 'reliability', href: '/gateway/analytics/reliability' },
+			{ nameKey: 'loginActivity', href: '/gateway/analytics/activity' },
 		],
 	},
 	{

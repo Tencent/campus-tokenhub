@@ -88,6 +88,8 @@ export type StoredAppConfig = {
   /** 开户默认限流（写入网关 `users.rate_limit`）；NULL = 不限 */
   defaultRateLimitRpm: number | null;
   defaultRateLimitTpm: number | null;
+  /** 登录数据统计总开关：NULL / false = 关闭（缺省关闭），true 才采集与展示 */
+  activityEnabled: boolean | null;
   tencentSecretId: string | null;
   tencentSecretKey: string | null;
   tencentPermissionIds: number[] | null;
@@ -210,6 +212,11 @@ export const APP_FIELDS: Record<AppField, FieldDescriptor> = {
     column: 'default_rate_limit_tpm', section: 'app', auditName: 'portal.default_rate_limit_tpm',
     env: 'DEFAULT_RATE_LIMIT_TPM', type: 'number', label: '开户默认 TPM',
     min: 0, integer: true,
+  },
+  activityEnabled: {
+    column: 'activity_enabled', section: 'app', auditName: 'portal.activity_enabled',
+    type: 'boolean', label: '登录数据统计',
+    description: '开启后采集两站的登录与页面访问，并在管理台「分析 → 登录数据」展示；关闭时不采集、接口关闭、菜单隐藏',
   },
   tencentSecretId: {
     column: 'tencent_secret_id_enc', section: 'app', auditName: 'tencent.secret_id',
@@ -397,6 +404,7 @@ export const SECRET_FIELD_NAMES = CONFIG_FIELD_NAMES.filter(
 export const SETTINGS_GROUP_FIELDS: Record<SettingsGroup, readonly ConfigField[]> = {
   school: [
     'schoolName', 'loginTitle', 'loginSubtitle', 'footerContact', 'brandColor', 'logo',
+    'activityEnabled',
   ],
   quota: [
     'defaultBudgetMax', 'defaultBudgetPeriod',

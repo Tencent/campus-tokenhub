@@ -188,6 +188,7 @@
 			"providerUsage": "供应商用量",
 			"userUsage": "用户用量",
 			"reliability": "可靠性",
+			"loginActivity": "登录数据",
 			"config": "配置",
 			"adminApiKeys": "集成密钥",
 			"maintenance": "维护模式"
@@ -3656,6 +3657,48 @@
 			"perModelComparison": "按模型对比供应商",
 			"recentErrors": "近期错误",
 			"viewAllErrors": "查看全部错误日志"
+		},
+		"loginActivity": {
+			"title": "登录数据",
+			"subtitle": "统计两站的登录与页面访问，按用户查看谁用得最多。",
+			"kpi": {
+				"logins": "登录次数",
+				"loginUsers": "登录人数",
+				"pageViews": "页面访问次数",
+				"pvPerUser": "人均访问次数",
+				"activeHint": "活跃 {count} 人"
+			},
+			"site": {
+				"all": "全部站点",
+				"assign": "统一采买",
+				"member": "成员自购"
+			},
+			"trend": {
+				"title": "按日趋势",
+				"logins": "登录次数",
+				"pageViews": "页面访问"
+			},
+			"rank": {
+				"title": "活跃用户排行",
+				"search": "搜索姓名或邮箱",
+				"export": "导出 CSV"
+			},
+			"columns": {
+				"user": "用户",
+				"site": "站点",
+				"logins": "登录次数",
+				"pageViews": "页面访问",
+				"activeDays": "活跃天数",
+				"lastActive": "最近活跃"
+			},
+			"empty": "所选范围内暂无数据",
+			"rangeTooLong": "时间跨度不能超过 90 天",
+			"loadFailed": "数据加载失败",
+			"exportFailed": "导出失败，请重试",
+			"retry": "重试",
+			"loading": "加载中…",
+			"disabled": "登录数据统计未开启",
+			"disabledHint": "在门户「设置 → 首页配置」中打开「登录数据统计」开关后，这里会展示两站的登录与页面访问。"
 		},
 		"columns": {
 			"model": "模型",

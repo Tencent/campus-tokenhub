@@ -188,6 +188,7 @@
 			"providerUsage": "プロバイダー使用量",
 			"userUsage": "ユーザー使用量",
 			"reliability": "信頼性",
+			"loginActivity": "ログイン状況",
 			"config": "設定",
 			"adminApiKeys": "連携キー",
 			"maintenance": "メンテナンス"
@@ -3656,6 +3657,48 @@
 			"perModelComparison": "モデル別 Provider 比較",
 			"recentErrors": "最近のエラー",
 			"viewAllErrors": "すべてのエラーログを表示"
+		},
+		"loginActivity": {
+			"title": "ログインデータ",
+			"subtitle": "2 つのサイトのログインとページビューを集計し、ユーザー別の利用状況を確認します。",
+			"kpi": {
+				"logins": "ログイン回数",
+				"loginUsers": "ログインユーザー数",
+				"pageViews": "ページビュー数",
+				"pvPerUser": "1 人あたり閲覧回数",
+				"activeHint": "アクティブ {count} 人"
+			},
+			"site": {
+				"all": "すべてのサイト",
+				"assign": "一括購入",
+				"member": "メンバー購入"
+			},
+			"trend": {
+				"title": "日別推移",
+				"logins": "ログイン回数",
+				"pageViews": "ページビュー"
+			},
+			"rank": {
+				"title": "アクティブユーザーランキング",
+				"search": "名前またはメールで検索",
+				"export": "CSV をエクスポート"
+			},
+			"columns": {
+				"user": "ユーザー",
+				"site": "サイト",
+				"logins": "ログイン回数",
+				"pageViews": "ページビュー",
+				"activeDays": "アクティブ日数",
+				"lastActive": "最終アクティブ"
+			},
+			"empty": "選択した範囲にデータがありません",
+			"rangeTooLong": "期間は 90 日を超えられません",
+			"loadFailed": "データの読み込みに失敗しました",
+			"exportFailed": "エクスポートに失敗しました。再試行してください。",
+			"retry": "再試行",
+			"disabled": "ログインデータは無効です",
+			"disabledHint": "ポータルの「設定 → ホーム設定」で「ログインデータ」を有効にすると、ここにログインとページビューが表示されます。",
+			"loading": "読み込み中…"
 		},
 		"columns": {
 			"model": "モデル",

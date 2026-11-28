@@ -19,10 +19,15 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   // pg 是 CJS + 可选原生依赖（pg-native），交给 Node 直接 require，不参与打包
   serverExternalPackages: ['pg'],
+  // 共享活动包以 TS 源码形式通过 file: 依赖引入，必须让 Next 转译它；
+  // 不加这条，node_modules 里的 .tsx/.ts 不会被编译，构建直接失败。
+  transpilePackages: ['@campus/portal-activity'],
   // 不指定这个，Next 会往上找到 /Users/lxhao/package-lock.json 当 workspace root，
   // 于是 standalone 产物被塞进 .next/standalone/WorkBuddy/.../，Dockerfile 里的
   // `node server.js` 就找不到入口。
   outputFileTracingRoot: process.cwd(),
+  // root 保持门户目录本身：共享活动包由 scripts/sync-activity-package.mjs 复制成
+  // node_modules 里的真实目录（不再是越界的符号链接），所以不需要把 root 上提。
   turbopack: { root: process.cwd() },
   reactStrictMode: true,
   poweredByHeader: false,

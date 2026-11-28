@@ -32,8 +32,11 @@ EXCLUDES=(
 )
 
 REPOS=(campus-tokenhub-assign campus-tokenhub-member)
-# git 操作的对象：两个子项目同属一个仓库
-TRACKED_PATHS=("${REPOS[@]}")
+# git 操作的对象：两个子项目同属一个仓库，外加两站共用的共享包。
+# `packages/portal-activity` 必须进包：两站 package.json 依赖
+# `file:../packages/portal-activity`，Dockerfile 也靠 `COPY --from=activity` 挂载，
+# 缺了它学校侧 `npm ci` 与 `docker compose build` 都会直接失败。
+TRACKED_PATHS=("${REPOS[@]}" packages/portal-activity)
 # 仓库根目录也要随包交付的文件：许可证全文（MIT）与第三方组件许可证地图。
 # 网关目录自带 AGPL-3.0 全文，但「哪部分适用哪个许可」的说明只在根目录，缺了会误导接收方。
 ROOT_FILES=(LICENSE THIRD-PARTY-NOTICES.md)
@@ -171,10 +174,12 @@ cat > "$TMP/交付说明.md" <<EOF
 | --- | --- |
 | \`campus-tokenhub-assign/\` | 成员分配 / TokenHub 门户与网关 |
 | \`campus-tokenhub-member/\` | 成员门户 |
+| \`packages/portal-activity/\` | 两站共用的活动埋点包（登录事件 / 页面访问），以 \`file:\` 依赖引入，必须与两站同级保留 |
 | \`LICENSE\` | 仓库根许可证（MIT，仅覆盖门户代码，不含网关目录） |
 | \`THIRD-PARTY-NOTICES.md\` | 第三方组件与许可证地图（含 octafuse-gateway 的 AGPL-3.0 边界说明） |
 
-两者同属一个仓库（campus-tokenhub monorepo）的两个子项目，分别安装依赖、分别启动。
+两者同属一个仓库（campus-tokenhub monorepo）的两个子项目，分别安装依赖、分别启动；
+\`packages/portal-activity\` 通过 \`file:../packages/portal-activity\` 被两站引用，目录层级不能改动。
 
 ## 许可证
 
@@ -221,7 +226,7 @@ npm start
 - 首次启动会把这两项加密写进共享配置（\`portal_shared.login_config\`），此后以库内为准、改 \`.env\` 不再生效；
   同库双站部署两站读同一行、口令天然一致；分栈部署（两套库）没有共享行，必须把两处写成同一个值；
 - SSO 参数填齐后这个入口**不会自动关闭**，请确认学校账号能登录后，再把 \`PORTAL_ADMIN_LOGIN\` 置 \`off\` 并清空口令；
-- \`OCTAFUSE_ADMIN_USERNAME\` / \`OCTAFUSE_ADMIN_PASSWORD\` 是门户调用网关 admin API 的**服务账号**（Basic 登录 \`/api/auth/login\`），不对人使用，别当成管理台口令。
+- \`OCTAFUSE_ADMIN_API_KEY\` 是门户调用网关 admin API 的**集成密钥**（\`Authorization: Bearer\`），不对人使用；门户不再持有网关管理员账密。
 
 ## 注意
 

@@ -14,6 +14,7 @@ import { resolveAdminStorageContext } from '@/lib/storage-context';
 import { adminAppVersion } from '@/lib/app-version';
 import { adminAnalyticsRoutes } from '@/lib/routes/admin/analytics';
 import { adminPortalUsageRoutes } from '@/lib/portal-usage/routes';
+import { adminPortalActivityRoutes } from '@/lib/portal-activity/routes';
 import { adminRequestContentRoutes } from '@/lib/request-content/routes';
 import { adminBudgetAuditLogsRoutes } from '@/lib/routes/admin/budget-audit-logs';
 import { adminBusinessTimezoneRoutes } from '@/lib/routes/admin/business-timezone';
@@ -111,6 +112,7 @@ export function createAdminApp(): Hono<AdminEnv> {
 	app.route('/admin/maintenance', adminMaintenanceRoutes);
 	app.route('/admin/analytics', adminAnalyticsRoutes);
 	app.route('/admin/portal-usage', adminPortalUsageRoutes);
+	app.route('/admin/portal-activity', adminPortalActivityRoutes);
 	app.route('/admin/request-logs', adminRequestContentRoutes);
 	app.route('/admin/access-keys', adminAccessKeysRoutes);
 	app.route('/admin/mcp-servers', adminMcpServersRoutes);

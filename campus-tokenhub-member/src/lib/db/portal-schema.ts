@@ -29,6 +29,7 @@ import {
   type ConfigField,
   type ProbeGroup,
 } from '@/lib/config/fields';
+import { ACTIVITY_OBSOLETE_INDEX_STATEMENTS } from '@campus/portal-activity';
 import { SHARED_SCHEMA_STATEMENTS } from './shared-schema';
 import { withTransaction, type Db } from './portal-db';
 
@@ -280,6 +281,9 @@ async function createSchema(): Promise<void> {
     // 先跑一次 DDL：settings / config_audit 等表必须存在才能读写迁移标记。
     // CREATE TABLE IF NOT EXISTS 对已有的 EAV 配置表是空操作，改名后会再跑一次建新表。
     for (const sql of PORTAL_SCHEMA_STATEMENTS) await db.query(sql);
+    // 废弃索引清理必须放在迁移标记的提前返回之前：老库早已打过标记，
+    // 放到后面就永远跑不到，那个索引会一直留着继续吃写入。
+    for (const sql of ACTIVITY_OBSOLETE_INDEX_STATEMENTS) await db.query(sql);
     if (await readSetting(db, STRUCTURED_MIGRATION_MARKER)) return;
 
     const [appEav, loginEav] = await Promise.all([

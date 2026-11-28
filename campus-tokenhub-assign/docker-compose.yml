@@ -115,10 +115,11 @@ services:
       DATABASE_DRIVER: postgres
       DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}
       PORT: '8789'
-      ADMIN_USERNAME: ${OCTAFUSE_ADMIN_USERNAME:-admin}
-      # 必填：不再给 octafuse123 之类的默认值。开源后默认值等于公开口令，
-      # 漏配时宁可启动失败，也不要带着「人人皆知的管理员口令」把管理台跑到公网。
-      ADMIN_PASSWORD: ${OCTAFUSE_ADMIN_PASSWORD:?OCTAFUSE_ADMIN_PASSWORD_MUST_BE_SET}
+      # 应急账密与门户凭据完全分开：门户只用 OCTAFUSE_ADMIN_API_KEY。
+      # 默认留空，ADMIN_PASSWORD_LOGIN 未显式设 on 时 /api/auth/login 恒 403；
+      # 仅 SSO 故障需回滚时，填强随机口令并同时设 ADMIN_PASSWORD_LOGIN=on，重启管理台。
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # 走 HTTPS（CLB 终止 TLS）时置 1，否则浏览器会丢弃会话 Cookie
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-}
       # 与 build.args 同一个值：运行期不参与路由，只给入口脚本做“镜像前缀自检”
@@ -168,6 +169,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 共享活动包在仓库根（相对本文件的上两级）
+      additional_contexts:
+        activity: ../packages/portal-activity
       args:
         # 门户外对前缀（线上 /tokenhub/portal）。Next 必须自带 basePath，见 deploy/nginx.conf.template
         PORTAL_BASE_PATH: ${PORTAL_BASE_PATH:-}
@@ -183,6 +187,8 @@ services:
       # 容器内走 compose 网络的服务名；宿主机端口只给学生浏览器用
       OCTAFUSE_ADMIN_BASE: http://gateway-admin:8789
       OCTAFUSE_PROXY_BASE: http://gateway-proxy:8787
+      # 门户调网关管理接口的集成密钥（不是账号密码），与网关的应急账密互相独立
+      OCTAFUSE_ADMIN_API_KEY: ${OCTAFUSE_ADMIN_API_KEY:?OCTAFUSE_ADMIN_API_KEY_MUST_BE_SET}
       # 门户自有表（portal schema）的连接串：与网关同一个库、不同 schema。
       # 覆盖 .env 里的宿主机地址（宿主机跑 dev 时指向 127.0.0.1:5433）
       PORTAL_DATABASE_URL: postgres://${POSTGRES_USER:-octafuse}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD_MUST_BE_SET}@postgres:5432/${POSTGRES_DB:-octafuse}

@@ -82,6 +82,7 @@ describe('admin UI route manifest', () => {
 			'analytics-providers',
 			'analytics-users',
 			'analytics-reliability',
+			'analytics-activity',
 			'admin-api-keys',
 			'config',
 		]);

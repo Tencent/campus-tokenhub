@@ -27,6 +27,7 @@ describe('config fields', () => {
       'defaultBudgetPeriod',
       'defaultRateLimitRpm',
       'defaultRateLimitTpm',
+      'activityEnabled',
       'tencentSecretId',
       'tencentSecretKey',
       'tencentPermissionIds',
@@ -39,7 +40,7 @@ describe('config fields', () => {
       'restrictConditions',
     ];
     for (const field of required) expect(FIELDS[field], field).toBeTruthy();
-    expect(CONFIG_FIELD_NAMES).toHaveLength(40);
+    expect(CONFIG_FIELD_NAMES).toHaveLength(41);
   });
 
   it('声明了 env 的字段，其变量名必须真实出现在 config.ts 的解析逻辑里', () => {

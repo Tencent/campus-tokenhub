@@ -49,6 +49,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 共享活动包在仓库根（相对本文件的上两级）
+      additional_contexts:
+        activity: ../packages/portal-activity
       args:
         # 门户外对前缀（线上 /tokenhub/portal）。Next 必须自带 basePath，见 deploy/nginx.conf.template
         PORTAL_BASE_PATH: ${PORTAL_BASE_PATH:-}

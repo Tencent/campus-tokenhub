@@ -24,6 +24,12 @@ describe('共享层 DDL', () => {
     expect(all).toContain('school_name');
   });
 
+  it('包含登录事件与页面访问表（由共享包展开）', () => {
+    expect(all).toContain('portal_shared.login_events');
+    expect(all).toContain('portal_shared.page_views');
+    expect(all).toContain("CHECK (site IN ('assign', 'member'))");
+  });
+
   it('不含任何本侧专属表（activity_configs / member_applications）', () => {
     expect(all).not.toContain('activity_configs');
     expect(all).not.toContain('member_applications');

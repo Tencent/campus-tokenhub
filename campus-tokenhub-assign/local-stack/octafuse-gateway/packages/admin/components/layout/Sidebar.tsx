@@ -28,6 +28,7 @@ import {
   ServerStackIcon,
   UsersIcon,
   ShieldCheckIcon,
+  ArrowTrendingUpIcon,
   Cog6ToothIcon,
   PauseCircleIcon,
   WrenchScrewdriverIcon,
@@ -36,6 +37,7 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { ADMIN_NAV_GROUPS, type AdminNavNameKey } from '@/lib/admin-nav';
+import { useActivityEnabled } from '@/lib/use-activity-enabled';
 import { matchAdminUiRoute } from '@/lib/admin-ui-route-manifest';
 import { adminAppVersion } from '@/lib/app-version';
 import { prefetchAdminRoute, type PrefetchTrigger } from '@/ui/prefetch';
@@ -58,6 +60,7 @@ const NAV_ICONS: Record<AdminNavNameKey, React.ComponentType<{ className?: strin
   providerUsage: ServerStackIcon,
   userUsage: UsersIcon,
   reliability: ShieldCheckIcon,
+  loginActivity: ArrowTrendingUpIcon,
   adminApiKeys: KeyIcon,
   config: Cog6ToothIcon,
   maintenance: PauseCircleIcon,
@@ -80,6 +83,15 @@ export default function Sidebar({
   const pathname = usePathname();
   const { snapshot, logout } = useAuthSession();
   const isLoggingOut = snapshot.pending === 'logout' || snapshot.pending === 'expiry';
+
+  // 「登录数据」入口跟随门户设置页的开关：默认关闭，未读到前（null）也不展示
+  const activityEnabled = useActivityEnabled();
+  const navGroups = ADMIN_NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter(
+      (item) => item.nameKey !== 'loginActivity' || activityEnabled === true
+    ),
+  })).filter((group) => group.items.length > 0);
 
   const handleLogout = () => {
     if (snapshot.pending) return;
@@ -106,7 +118,7 @@ export default function Sidebar({
 
       {/* Navigation */}
       <nav aria-label={t('navigation')} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-3 py-3">
-        {ADMIN_NAV_GROUPS.map((group) => (
+        {navGroups.map((group) => (
           <div key={group.groupKey}>
             <h3 className="mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
               {t(`groups.${group.groupKey}`)}

@@ -59,6 +59,10 @@ export function getAdminAuthorizationDecision(method: string, pathname: string):
 	if (pathname.startsWith('/admin/portal-usage')) {
 		return { kind: 'permission', permission: 'analytics.read' };
 	}
+	// 门户活跃度看板：只读聚合，与 analytics 同级
+	if (pathname.startsWith('/admin/portal-activity')) {
+		return { kind: 'permission', permission: 'analytics.read' };
+	}
 	if (pathname.startsWith('/admin/request-logs') || pathname.startsWith('/admin/budget-audit-logs')) {
 		return { kind: 'permission', permission: 'logs.read' };
 	}

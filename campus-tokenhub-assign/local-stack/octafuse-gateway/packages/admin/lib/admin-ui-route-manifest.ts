@@ -13,7 +13,7 @@
  * 本模块只允许包含路径/跳转数据与纯函数，**不得**导入 React、页面组件、
  * Next、数据库或任何 secret 模块，保证 Node 入口不会把浏览器运行时拉进来。
  *
- * 2.2 起本清单覆盖全部 23 个管理台入口：20 个内容页 + 根重定向 + 2 个旧地址重定向
+ * 2.2 起本清单覆盖全部 24 个管理台入口：21 个内容页 + 根重定向 + 2 个旧地址重定向
  * （OAuth 访问令牌、维护模式），与侧边栏菜单（`lib/admin-nav.ts`）逐项对齐。
  */
 
@@ -57,6 +57,7 @@ export const ADMIN_UI_ROUTES: readonly AdminUiRouteDefinition[] = [
 	{ id: 'analytics-providers', pattern: '/gateway/analytics/providers', kind: 'page' },
 	{ id: 'analytics-users', pattern: '/gateway/analytics/users', kind: 'page' },
 	{ id: 'analytics-reliability', pattern: '/gateway/analytics/reliability', kind: 'page' },
+	{ id: 'analytics-activity', pattern: '/gateway/analytics/activity', kind: 'page' },
 
 	// 集成与系统
 	{ id: 'admin-api-keys', pattern: '/gateway/admin-api-keys', kind: 'page' },

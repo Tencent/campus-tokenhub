@@ -6,6 +6,9 @@ import { isMemberAdmin } from '@/lib/members/access';
 import { NavigationProgress } from '@/components/portal/NavigationProgress';
 import { Sidebar } from '@/components/portal/Sidebar';
 import { TopBar } from '@/components/portal/TopBar';
+import { VisitTracker } from '@/components/portal/VisitTracker';
+import { isActivityEnabled } from '@/lib/activity/enabled';
+import { appPath } from '@/lib/paths';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,14 +23,20 @@ export default async function PortalLayout({ children }: { children: React.React
   const cfg = getConfig();
   const branding = resolveBranding({ sessionSchoolName: session.school_name, config: cfg });
 
-  const [isAdmin, memberAdmin] = await Promise.all([
+  const [isAdmin, memberAdmin, activityEnabled] = await Promise.all([
     resolvePortalAdmin(session),
     isMemberAdmin(session),
+    // 设置页「登录数据统计」开关，缺省关闭；关闭时连 VisitTracker 都不挂
+    isActivityEnabled(),
   ]);
 
   return (
     <div className="min-h-screen bg-cream">
       <NavigationProgress />
+      {/* 页面访问上报：只在 pathname 变化时触发，不阻塞渲染 */}
+      {activityEnabled ? (
+        <VisitTracker endpoint={appPath('/api/portal/activity/visit')} />
+      ) : null}
       <Sidebar
         isAdmin={isAdmin}
         isMemberAdmin={memberAdmin}

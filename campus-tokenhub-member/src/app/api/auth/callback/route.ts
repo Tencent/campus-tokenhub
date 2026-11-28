@@ -10,6 +10,7 @@ import {
 } from '@/lib/auth/providers/oidc';
 import { authErrorCode, getAuthAdapter } from '@/lib/auth/providers/registry';
 import { signErrorDetail } from '@/lib/auth/login-errors';
+import { activityRecorder } from '@/lib/activity/recorder';
 
 /**
  * 认证回调：校验 state → 换 token → 产出身份 → 开户 → 签发会话。
@@ -77,6 +78,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       ip,
       ua,
     });
+
+    // 登录事件落库：内部 300ms 预算 + 告警节流。外层再包一层兜底：
+    // 此时会话已经签发，埋点任何异常都不允许把登录打成失败。
+    try {
+      await activityRecorder.recordLogin({
+        sub: identity.sub,
+        name: identity.name,
+        email: identity.email,
+        method: adapter.kind,
+      });
+    } catch {
+      // 静默：统计缺失优于登录失败
+    }
 
     const txCookie = clearOidcTxCookie(secure);
 

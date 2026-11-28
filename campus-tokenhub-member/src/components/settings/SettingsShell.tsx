@@ -407,6 +407,16 @@ export function SettingsShell({
               />
             </FieldRow>
             <FieldRow
+              label="登录数据统计"
+              hint="开启后才采集两站的登录与页面访问；关闭时管理台「分析 → 登录数据」入口隐藏"
+            >
+              <Toggle
+                label="启用登录数据统计"
+                checked={(draft['activityEnabled'] ?? 'false') !== 'false'}
+                onChange={(next) => set('activityEnabled', String(next))}
+              />
+            </FieldRow>
+            <FieldRow
               label="主题色"
               hint="十六进制颜色，例如 #2557D6"
               error={fieldErrors['brandColor']}

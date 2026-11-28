@@ -1,0 +1,10 @@
+# 共享活动包作为 docker compose 的 additional_context 传入时，node_modules(约 400MB)
+# 与测试文件不参与构建，白白拖慢镜像构建。只保留 package.json 与 src。
+node_modules
+tests
+coverage
+*.md
+*.log
+package-lock.json
+tsconfig.json
+vitest.config.ts

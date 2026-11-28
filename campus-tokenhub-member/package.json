@@ -4,6 +4,10 @@
   "private": true,
   "scripts": {
     "audit": "npm audit --audit-level=high",
+    "sync:activity": "node scripts/sync-activity-package.mjs",
+    "postinstall": "node scripts/sync-activity-package.mjs",
+    "predev": "node scripts/sync-activity-package.mjs",
+    "prebuild": "node scripts/sync-activity-package.mjs",
     "dev": "next dev --turbopack",
     "dev:webpack": "next dev",
     "dev:local": "node scripts/use-env.mjs local && next dev --turbopack --port 3000 --hostname 127.0.0.1",
@@ -23,9 +27,11 @@
     "check:isolation": "node scripts/check-isolation.mjs",
     "check:isolation:warn": "node scripts/check-isolation.mjs --warn",
     "bootstrap-admin": "node scripts/bootstrap-admin.mjs",
-    "check:shared-ddl": "node scripts/check-shared-ddl.mjs"
+    "check:shared-ddl": "node scripts/check-shared-ddl.mjs",
+    "check:activity-routes": "node scripts/check-activity-routes.mjs"
   },
   "dependencies": {
+    "@campus/portal-activity": "file:../packages/portal-activity",
     "@wecom/jssdk": "^2.3.2",
     "jose": "^5.9.6",
     "next": "16.4.6",

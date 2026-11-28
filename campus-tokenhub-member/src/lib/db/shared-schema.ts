@@ -9,6 +9,7 @@
  * 各自写在 `portal-schema.ts` 里，用各自 schema 下的表名。
  */
 
+import { ACTIVITY_SCHEMA_STATEMENTS } from '@campus/portal-activity';
 import { APP_CONFIG_TABLE, LOGIN_CONFIG_TABLE, SHARED_SCHEMA } from '@/lib/config/tables';
 
 export const SHARED_SCHEMA_STATEMENTS: readonly string[] = [
@@ -49,6 +50,8 @@ export const SHARED_SCHEMA_STATEMENTS: readonly string[] = [
      default_budget_period  text,
      default_rate_limit_rpm integer,
      default_rate_limit_tpm integer,
+     -- 登录数据统计总开关：NULL = 关闭（缺省关闭）
+     activity_enabled       boolean,
      mode_assign_enabled    boolean,
      mode_member_enabled    boolean,
      mode_default           text,
@@ -106,6 +109,8 @@ export const SHARED_SCHEMA_STATEMENTS: readonly string[] = [
   // 表现是「门户起来了但读不到配置：relation portal_shared.app_config does not exist」。
   `ALTER TABLE ${APP_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS default_rate_limit_rpm integer`,
   `ALTER TABLE ${APP_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS default_rate_limit_tpm integer`,
+  // 登录数据统计总开关：缺省 NULL（= 关闭）。关闭后两站不采集、网关不出接口、菜单不展示。
+  `ALTER TABLE ${APP_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS activity_enabled boolean`,
   // 部署管理员（引导期账号密码登录）从「只能环境变量」改为「可界面配置」。
   // 归属 login 分区，所以加在 login_config 上，不是 app_config。
   `ALTER TABLE ${LOGIN_CONFIG_TABLE} ADD COLUMN IF NOT EXISTS local_admin_mode text`,
@@ -129,4 +134,7 @@ export const SHARED_SCHEMA_STATEMENTS: readonly string[] = [
      actor_ip   text,
      created_at timestamptz NOT NULL DEFAULT now()
    )`,
+  // 登录事件与页面访问表：由共享包 `packages/portal-activity` 单一维护，
+  // 两站展开同一份语句，避免手写两份 DDL 时漏改一侧。
+  ...ACTIVITY_SCHEMA_STATEMENTS,
 ];

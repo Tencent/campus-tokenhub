@@ -34,6 +34,7 @@ export const ADMIN_UI_ROUTE_MODULES: Record<string, AdminRouteLoader> = {
 	'analytics-providers': () => import('@/app/gateway/analytics/providers/page'),
 	'analytics-users': () => import('@/app/gateway/analytics/users/page'),
 	'analytics-reliability': () => import('@/app/gateway/analytics/reliability/page'),
+	'analytics-activity': () => import('@/app/gateway/analytics/activity/page'),
 	'admin-api-keys': () => import('@/app/gateway/admin-api-keys/page'),
 	config: () => import('@/app/gateway/config/page'),
 };

@@ -75,6 +75,10 @@ test('permission matrix protects console-only surfaces and defaults to deny', ()
 	assert.deepEqual(getAdminAuthorizationDecision('GET', '/admin/analytics/keys'), {
 		kind: 'permission', permission: 'analytics.read',
 	});
+	// 门户活跃度看板含全员姓名与邮箱，必须落在 analytics.read 之下，不能落进默认放行分支
+	assert.deepEqual(getAdminAuthorizationDecision('GET', '/admin/portal-activity/summary'), {
+		kind: 'permission', permission: 'analytics.read',
+	});
 	assert.deepEqual(getAdminAuthorizationDecision('GET', '/admin/oauth-access-tokens'), {
 		kind: 'permission', permission: 'user_keys.read',
 	});
