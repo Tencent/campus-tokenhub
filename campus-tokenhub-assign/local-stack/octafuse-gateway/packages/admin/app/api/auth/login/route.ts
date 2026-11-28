@@ -4,8 +4,12 @@
  */
 
 /**
- * 后台登录：`POST` 校验 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 后写入 `admin_session`（httpOnly）。
+ * 后台应急账密登录：`POST` 校验 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 后写入 `admin_session`（httpOnly）。
  * `DELETE` 与 `/api/auth/logout` 类似，用于清除会话（兼容旧客户端可一并保留）。
+ *
+ * 默认关闭：`ADMIN_AUTH_MODE=portal` 且未显式 `ADMIN_PASSWORD_LOGIN=on` 时恒 403。
+ * 门户已改用集成密钥 `Authorization: Bearer` 调 `/api/admin/*`，不再经过这里；
+ * 人类正常登录走门户 SSO（`portal_session`）。这条通道只在 SSO 故障时由运维临时开启。
  */
 import { generateSessionToken, hashSessionToken, resolveCookieSecure, timingSafeEqualSecret } from '@/lib/auth';
 import { cookies } from 'next/headers';
@@ -17,7 +21,10 @@ import {
 } from '@/lib/login-rate-limit';
 import { getClientIp, logAdminAuthEvent } from '@/lib/security-log';
 import { resolveAdminAuthMode } from '@/lib/admin-auth-mode';
-import { ADMIN_PASSWORD_LOGIN_ENV, resolveAdminPasswordLogin } from '@/lib/admin-password-policy';
+import {
+	ADMIN_PASSWORD_LOGIN_ENV,
+	resolveAdminPasswordLogin,
+} from '@/lib/admin-password-policy';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,30 +49,23 @@ export async function POST(request: Request) {
       );
     }
 
-    // 凭据来自 OpenNext env；本地 dev 回退 process.env
-    let adminUsername: string | undefined;
-    let adminPassword: string | undefined;
+    // 凭据来自 OpenNext env；本地 dev 回退 process.env。
+    // 默认留空 = 应急账密未配置；判定会返回干净的 403，不暴露服务器配置状态（也不返回 500）。
+    let adminUsername = '';
+    let adminPassword = '';
 
     try {
       const { env } = await import('@opennextjs/cloudflare').then(m => m.getCloudflareContext());
-      adminUsername = env.ADMIN_USERNAME;
-      adminPassword = env.ADMIN_PASSWORD;
+      adminUsername = env.ADMIN_USERNAME ?? '';
+      adminPassword = env.ADMIN_PASSWORD ?? '';
     } catch {
-      adminUsername = process.env.ADMIN_USERNAME;
-      adminPassword = process.env.ADMIN_PASSWORD;
+      adminUsername = process.env.ADMIN_USERNAME ?? '';
+      adminPassword = process.env.ADMIN_PASSWORD ?? '';
     }
 
-    if (!adminUsername || !adminPassword) {
-      console.error('Admin credentials not configured');
-      return Response.json(
-        { success: false, message: 'Server configuration error' },
-        { status: 500 }
-      );
-    }
-
-    // portal 模式下这条账密通道默认关闭：开源后 `.env.example` 与 compose 里的默认口令
-    // 就是公开信息，只隐藏 UI 不拦接口等于把管理台交出去。要留应急回滚路径，
-    // 显式设 ADMIN_AUTH_MODE=password/both，或 ADMIN_PASSWORD_LOGIN=on。
+    // portal 模式且 ADMIN_PASSWORD_LOGIN 未显式 on → 一律 403（默认安全）。
+    // 应急回滚时显式设 ADMIN_AUTH_MODE=password/both 或 ADMIN_PASSWORD_LOGIN=on，
+    // 并配置独立的 ADMIN_USERNAME / ADMIN_PASSWORD，重启管理台；用完把开关改回空。
     const decision = resolveAdminPasswordLogin({
       mode: resolveAdminAuthMode(),
       passwordLogin: process.env[ADMIN_PASSWORD_LOGIN_ENV],

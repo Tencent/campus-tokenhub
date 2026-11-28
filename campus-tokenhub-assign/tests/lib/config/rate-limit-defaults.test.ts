@@ -13,8 +13,7 @@ import { storedConfig } from '../../helpers/config';
 const BASE_ENV = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'T3st-Admin-Pass-9f2c',
+  OCTAFUSE_ADMIN_API_KEY: 'sk-admin-9f2c4b7e6a1d8c530b4e2f7a9c6d1e8035',
   OCTAFUSE_EXTERNAL_SYSTEM: 'campus-tokenhub',
   SESSION_SECRET: 'rate-limit-defaults-session-secret-32-chars',
 };

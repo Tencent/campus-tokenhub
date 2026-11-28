@@ -42,11 +42,28 @@ describe('assessAdminPasswordStrength', () => {
 });
 
 describe('resolveAdminPasswordLogin', () => {
-	it('portal 模式未显式开启时关闭账密通道', () => {
+	it('portal 模式未显式开启时关闭账密通道（默认安全）', () => {
 		assert.deepEqual(
 			resolveAdminPasswordLogin({ mode: 'portal', username: 'admin', password: STRONG }),
 			{ allowed: false, reason: 'disabled_by_mode' }
 		);
+	});
+
+	it('凭据齐全也不能绕过开关：门户改用集成密钥后不再有内部后门', () => {
+		// 旧实现给门户留了 internal 标记（x-tokenhub-portal-token = SESSION_SECRET），
+		// 持密钥即可在 portal 模式下登录。该分支已删除，判定只认显式开关。
+		for (const passwordLogin of [undefined, null, '', 'off']) {
+			assert.deepEqual(
+				resolveAdminPasswordLogin({
+					mode: 'portal',
+					passwordLogin,
+					username: 'admin',
+					password: STRONG,
+				}),
+				{ allowed: false, reason: 'disabled_by_mode' },
+				String(passwordLogin)
+			);
+		}
 	});
 
 	it('portal 模式显式开启后允许强口令', () => {
@@ -70,6 +87,13 @@ describe('resolveAdminPasswordLogin', () => {
 				password: 'short-pass',
 			}),
 			{ allowed: false, reason: 'weak_password' }
+		);
+	});
+
+	it('显式开启但应急账密留空时视为未配置', () => {
+		assert.deepEqual(
+			resolveAdminPasswordLogin({ mode: 'portal', passwordLogin: 'on' }),
+			{ allowed: false, reason: 'unconfigured' }
 		);
 	});
 

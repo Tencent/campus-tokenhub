@@ -7,8 +7,7 @@ import { memoryConfigRepo } from '../helpers/config';
 const BASE_ENV: Record<string, string> = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'gateway-admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'gateway-password',
+  OCTAFUSE_ADMIN_API_KEY: 'sk-admin-9f2c4b7e6a1d8c530b4e2f7a9c6d1e8035',
   OCTAFUSE_EXTERNAL_SYSTEM: 'campus-tokenhub',
   SESSION_SECRET: 'fingerprint-test-session-secret-32ch',
   PORTAL_ADMIN_USERNAME: 'ops-admin',

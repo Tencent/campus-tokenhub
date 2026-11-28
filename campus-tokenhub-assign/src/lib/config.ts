@@ -114,8 +114,8 @@ export type AppConfig = {
   octafuse: {
     adminBase: string;
     proxyBase: string;
-    adminUsername: string;
-    adminPassword: string;
+    /** 网关「系统集成 → 集成密钥」签发的具名 Admin API Key，只放服务端 */
+    adminApiKey: string;
     externalSystem: string;
   };
   defaults: {
@@ -207,63 +207,40 @@ function optional(env: EnvSource, key: string, fallback = ''): string {
   return value && value.trim() ? value.trim() : fallback;
 }
 
-/** ── 网关管理员口令强度 ───────────────────────────────────────────────
- * 网关管理台能列出全站用户、读 API Key 明文、改供应商 Key，是整条链路的最高权限。
- * .env.example 里的 `change-me`、compose 早期的 `octafuse123` 在开源后就是公开信息，
- * 照抄即等于把管理台交出去，因此这里与 SESSION_SECRET 同口径在启动期直接拒绝。
+/** ── 网关集成密钥校验 ───────────────────────────────────────────────
+ * 门户只用「系统集成 → 集成密钥」签发的具名 Admin API Key 调 `/api/admin/*`
+ * （`Authorization: Bearer <key>`），不再持有网关管理员账号密码。
+ * 这把 Key 能读写全站用户与密钥，示例值照抄上线等于把管理台交出去，
+ * 因此与 SESSION_SECRET 同口径在启动期直接拒绝。
  */
-const GATEWAY_ADMIN_PASSWORD_MIN = 16;
-/** 示例值 / 常见弱口令：整串匹配（小写比较） */
-const GATEWAY_ADMIN_EXAMPLE_EXACT = new Set([
-  'change-me',
-  'change_me',
-  'changeme',
-  'octafuse123',
-  'replace-me',
-  'password',
-  'passw0rd',
-  'please-change',
-  'admin',
-  'secret',
-  '123456',
-  '12345678',
-]);
-/** 示例值前缀：`.env.example` 习惯用这些前缀提示「请替换」 */
-const GATEWAY_ADMIN_EXAMPLE_PREFIX = /^(please-change|your-|replace-|example)/i;
+const GATEWAY_ADMIN_KEY_MIN = 16;
+/** `.env.example` 习惯用这些前缀提示「请替换」 */
+const GATEWAY_ADMIN_KEY_EXAMPLE = /^(please-change|change-me|your-|replace-|example|sk-admin-0{8,})/i;
 
 /**
- * 校验网关管理员口令，返回去掉首尾空白的值。
+ * 校验网关集成密钥，返回去掉首尾空白的值。
  *
- * 只拦「明显会被公开猜到」的口令，不做复杂度策略：长度 + 示例值 + 字符种类下限，
- * 误伤真实口令比漏拦更糟（会把线上部署挡在启动之外）。
+ * 只拦「明显会被公开猜到」的值，不强制 `sk-admin-` 前缀：迁移生成的
+ * `legacy-master` 与运维自建的具名 Key 形状未必一致，误伤真实 Key 比漏拦更糟。
  */
-export function assertGatewayAdminPassword(value: string, username = 'admin'): string {
-  const password = value.trim();
-  const hint = '请改用随机口令（openssl rand -base64 24）';
-  // 先判示例值：`change-me` 这类串同时也不够长，但真正的问题是「它写在公开的示例文件里」，
-  // 报错必须说清这一点，否则运维只会去补长度
-  const lowered = password.toLowerCase();
-  if (GATEWAY_ADMIN_EXAMPLE_EXACT.has(lowered) || GATEWAY_ADMIN_EXAMPLE_PREFIX.test(password)) {
+export function assertGatewayAdminApiKey(value: string): string {
+  const key = value.trim();
+  const hint = '请在网关后台「系统集成 → 集成密钥」创建具名最小权限 Key 后填入 OCTAFUSE_ADMIN_API_KEY';
+  if (GATEWAY_ADMIN_KEY_EXAMPLE.test(key)) {
+    throw new Error(`OCTAFUSE_ADMIN_API_KEY 仍是示例值，开源后等于公开密钥；${hint}`);
+  }
+  if (key.length < GATEWAY_ADMIN_KEY_MIN) {
     throw new Error(
-      `OCTAFUSE_ADMIN_PASSWORD 仍是示例口令（如 change-me / octafuse123），开源后等于公开口令；${hint}`
+      `OCTAFUSE_ADMIN_API_KEY 至少 ${GATEWAY_ADMIN_KEY_MIN} 个字符（当前 ${key.length} 个）；${hint}`
     );
   }
-  if (password.length < GATEWAY_ADMIN_PASSWORD_MIN) {
-    throw new Error(
-      `OCTAFUSE_ADMIN_PASSWORD 至少 ${GATEWAY_ADMIN_PASSWORD_MIN} 个字符（当前 ${password.length} 个）；${hint}`
-    );
-  }
-  if (username.trim() && lowered === username.trim().toLowerCase()) {
-    throw new Error(`OCTAFUSE_ADMIN_PASSWORD 不能与 OCTAFUSE_ADMIN_USERNAME 相同；${hint}`);
-  }
-  // 长度够但字符种类极少（`kkkk…`、`abcdabcd…`）同样是弱口令：8 种以上字符才不会一眼猜中
-  const alphabet = new Set(password).size;
+  const alphabet = new Set(key).size;
   if (alphabet < 8) {
     throw new Error(
-      `OCTAFUSE_ADMIN_PASSWORD 字符种类过少（只有 ${alphabet} 种）：口令空间太小，易被在线爆破；${hint}`
+      `OCTAFUSE_ADMIN_API_KEY 字符种类过少（只有 ${alphabet} 种）：密钥空间太小；${hint}`
     );
   }
-  return password;
+  return key;
 }
 
 function assertUrl(name: string, value: string): string {
@@ -438,19 +415,16 @@ export function loadConfig(env: EnvSource = process.env): AppConfig {
   // 日志说「允许」、实际「关闭」，把排障的人带偏过。
   // 真实状态的提示统一放在 instrumentation 里（那里拿到的是 overlay 之后的 cfg）。
 
-  // 网关管理员是最高权限：口令强度必须在这里拦住，不能等被人拿公开默认值登进管理台
-  const octafuseAdminUsername = required(env, 'OCTAFUSE_ADMIN_USERNAME');
-  const octafuseAdminPassword = assertGatewayAdminPassword(
-    required(env, 'OCTAFUSE_ADMIN_PASSWORD'),
-    octafuseAdminUsername
+  // 门户只用集成密钥调网关管理接口；示例 Key 上线等于把管理台交出去，启动期拦住
+  const octafuseAdminApiKey = assertGatewayAdminApiKey(
+    required(env, 'OCTAFUSE_ADMIN_API_KEY')
   );
 
   return {
     octafuse: {
       adminBase: assertUrl('OCTAFUSE_ADMIN_BASE', required(env, 'OCTAFUSE_ADMIN_BASE')),
       proxyBase: assertUrl('OCTAFUSE_PROXY_BASE', required(env, 'OCTAFUSE_PROXY_BASE')),
-      adminUsername: octafuseAdminUsername,
-      adminPassword: octafuseAdminPassword,
+      adminApiKey: octafuseAdminApiKey,
       externalSystem: required(env, 'OCTAFUSE_EXTERNAL_SYSTEM'),
     },
     defaults: {

@@ -140,6 +140,12 @@ describe('maskSecrets', () => {
     expect(maskSecrets('id=AKIDruntimeSecret1234 done')).toBe('id=*** done');
   });
 
+  it('以 sk- 开头的密钥整体抹掉，不留 sk-*** 半截形态', () => {
+    // 顺序若反了，KEY_PATTERN 会先把密钥打成 `sk-***`，之后精确替换再也匹配不上
+    setRuntimeSecretProvider(() => ['sk-runtime-secret-abcdef123456']);
+    expect(maskSecrets('key=sk-runtime-secret-abcdef123456 done')).toBe('key=*** done');
+  });
+
   it('运行期密钥来源抛错时不影响 env 密钥脱敏，也不抛错', () => {
     setRuntimeSecretProvider(() => {
       throw new Error('overlay not ready');

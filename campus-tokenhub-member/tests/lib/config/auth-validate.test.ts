@@ -25,8 +25,7 @@ const BASE_ENV: Record<string, string> = {
   NODE_ENV: 'test',
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'admin-password',
+  // 成员站不依赖网关：不注入任何 OCTAFUSE_* 凭据（loadConfig 不读取）
   OCTAFUSE_EXTERNAL_SYSTEM: 'campus-tokenhub',
   SESSION_SECRET: 'auth-validate-test-session-secret-32-chars',
   AUTH_PROVIDER: 'oauth2',

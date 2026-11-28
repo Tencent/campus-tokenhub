@@ -6,8 +6,7 @@ import { resetConfigCache } from '@/lib/config';
 const baseEnv = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'pw',
+  OCTAFUSE_ADMIN_API_KEY: 'sk-admin-9f2c4b7e6a1d8c530b4e2f7a9c6d1e8035',
   OCTAFUSE_EXTERNAL_SYSTEM: 'campus-tokenhub',
   SESSION_SECRET: 'K7q2mZ9rT4wX8bN3vF6hJ1sL5pY0cA2d',
   // 限流桶按客户端 IP 区分，这里显式信任测试传入的 X-Forwarded-For

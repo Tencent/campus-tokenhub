@@ -14,16 +14,38 @@ import { sessionTokensFromCookieHeader, verifyAnySession, type SessionPayload } 
 import { isSessionRevoked } from '@/lib/auth/revocation';
 import { isPasswordSessionAllowed } from '@/lib/auth/local-admin';
 import { refreshConfigOverlay } from '@/lib/config/overlay';
+import { maskSecrets } from '@/lib/audit';
+
+export type ApiErrorOptions = {
+  /**
+   * 真实原因（网关/上游返回的那句话）。
+   *
+   * 只走服务端日志时它是最重要的排障线索：`provision_failed` 这种泛化 code 只能说明
+   * 「失败了」，说明不了「为什么失败」（网关登录被拒 / 超时 / 上游 HTTP 码）。
+   */
+  detail?: string | null;
+  /**
+   * 是否把 `detail` 随响应体下发（字段名 `reason`）。
+   *
+   * 默认不下发：`detail` 可能是上游原文，含内网地址、容器名或上游实现细节，
+   * 学生侧没有排障诉求。调用方确认「当前请求者可以看」时（如管理员）再置 true。
+   */
+  exposeDetail?: boolean;
+};
 
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly detail: string | null;
+  readonly exposeDetail: boolean;
 
-  constructor(status: number, message: string, code = 'api_error') {
+  constructor(status: number, message: string, code = 'api_error', options: ApiErrorOptions = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.detail = options.detail?.trim() ? options.detail.trim() : null;
+    this.exposeDetail = options.exposeDetail === true;
   }
 }
 
@@ -32,8 +54,27 @@ export function jsonError(error: unknown): NextResponse {
   const requestId = randomId();
 
   if (error instanceof ApiError) {
+    // `request_id` 只有和日志对得上才有意义：这里把 detail 打出来，运维拿响应头里的
+    // x-request-id 就能直接从容器日志里捞到这一次失败的真实原因。
+    // 先脱敏再打：detail 可能夹带上游原文，不能保证里面没有凭证。
+    if (error.detail) {
+      console.error('[api] 请求失败', {
+        requestId,
+        status: error.status,
+        code: error.code,
+        detail: maskSecrets(error.detail),
+        exposeDetail: error.exposeDetail,
+      });
+    }
+
     return NextResponse.json(
-      { error: error.message, code: error.code, request_id: requestId },
+      {
+        error: error.message,
+        code: error.code,
+        request_id: requestId,
+        // 管理员排障才带原因；学生侧连字段都不出现，避免把上游细节当成「页面报错」暴露出去
+        ...(error.detail && error.exposeDetail ? { reason: maskSecrets(error.detail) } : {}),
+      },
       { status: error.status, headers: noStoreHeaders(requestId) }
     );
   }

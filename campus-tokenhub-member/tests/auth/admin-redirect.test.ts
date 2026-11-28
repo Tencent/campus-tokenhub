@@ -6,8 +6,7 @@ function setEnv(overrides: Record<string, string> = {}): void {
   Object.assign(process.env, {
     OCTAFUSE_ADMIN_BASE: 'http://gateway-admin:8789',
     OCTAFUSE_PROXY_BASE: 'http://gateway-proxy:8787',
-    OCTAFUSE_ADMIN_USERNAME: 'admin',
-    OCTAFUSE_ADMIN_PASSWORD: 'pw',
+    // 成员站不依赖网关：不注入任何 OCTAFUSE_* 凭据（loadConfig 不读取）
     OCTAFUSE_EXTERNAL_SYSTEM: 'school-sso',
     SESSION_SECRET: 'unit-test-secret-that-is-long-enough',
     ...overrides,

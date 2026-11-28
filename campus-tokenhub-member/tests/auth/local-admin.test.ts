@@ -12,8 +12,7 @@ import {
 const BASE_ENV: Record<string, string> = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'gateway-admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'gateway-password',
+  // 成员站不依赖网关：不注入任何 OCTAFUSE_* 凭据（loadConfig 不读取）
   OCTAFUSE_EXTERNAL_SYSTEM: 'campus-tokenhub',
   SESSION_SECRET: 'local-admin-test-session-secret-32-chars',
   PORTAL_ADMIN_USERNAME: 'ops-admin',

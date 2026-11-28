@@ -71,11 +71,14 @@ function configuredSecrets(): string[] {
 
 /** 抹掉 Key 明文与配置里的高价值凭证。 */
 export function maskSecrets(text: string): string {
-  let output = text.replace(KEY_PATTERN, 'sk-***');
+  // 顺序不能反：以 `sk-` 开头的配置密钥若先被 KEY_PATTERN 打成 `sk-***`，
+  // 之后按完整 secret 精确替换就再也匹配不上，日志里会残留半截形态。
+  let output = text;
   for (const secret of configuredSecrets()) {
     output = output.split(secret).join('***');
   }
-  return output;
+  // 兜底：配置外的零散 `sk-…`（例如用户直接贴进日志的 Key）统一打码
+  return output.replace(KEY_PATTERN, 'sk-***');
 }
 
 function clean(value: string | null | undefined): string | null {

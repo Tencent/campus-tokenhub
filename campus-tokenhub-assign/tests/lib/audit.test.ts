@@ -9,14 +9,13 @@ import {
 } from '@/lib/config/overlay';
 import { storedConfig } from '../helpers/config';
 
-const PASSWORD = 'admin-pw-should-never-appear';
+const ADMIN_KEY = 'sk-admin-9f2c4b7e6a1d8c530b4e2f7a9c6d1e8035';
 const SESSION_SECRET = 'K7q2mZ9rT4wX8bN3vF6hJ1sL5pY0cA2d';
 
 const baseEnv = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: PASSWORD,
+  OCTAFUSE_ADMIN_API_KEY: ADMIN_KEY,
   OCTAFUSE_EXTERNAL_SYSTEM: 'school-sso',
   SESSION_SECRET,
 };
@@ -59,14 +58,14 @@ describe('buildAuditRecord', () => {
     expect(record.target).toBe('sk-***');
   });
 
-  it('管理员密码与会话密钥不会出现在任何字段里', () => {
+  it('网关集成密钥与会话密钥不会出现在任何字段里', () => {
     const record = buildAuditRecord('auth.login', {
-      ua: `pw=${PASSWORD} secret=${SESSION_SECRET}`,
+      ua: `pw=${ADMIN_KEY} secret=${SESSION_SECRET}`,
       ip: '10.0.0.1',
     });
 
     const serialized = JSON.stringify(record);
-    expect(serialized).not.toContain(PASSWORD);
+    expect(serialized).not.toContain(ADMIN_KEY);
     expect(serialized).not.toContain(SESSION_SECRET);
     expect(record.ip).toBe('10.0.0.1');
   });
@@ -77,8 +76,8 @@ describe('buildAuditRecord', () => {
   });
 
   it('M1：先脱敏再截断——密钥出现在 512 字符之后也不会泄漏', () => {
-    const record = buildAuditRecord('auth.login', { ua: `${'x'.repeat(600)}${PASSWORD}` });
-    expect(JSON.stringify(record)).not.toContain(PASSWORD);
+    const record = buildAuditRecord('auth.login', { ua: `${'x'.repeat(600)}${ADMIN_KEY}` });
+    expect(JSON.stringify(record)).not.toContain(ADMIN_KEY);
   });
 
   it('M1：OAuth2 Client Secret 同样不出现在日志里', async () => {
@@ -150,7 +149,7 @@ describe('maskSecrets', () => {
     setRuntimeSecretProvider(() => {
       throw new Error('overlay not ready');
     });
-    expect(maskSecrets(`pw=${PASSWORD}`)).toBe('pw=***');
+    expect(maskSecrets(`pw=${ADMIN_KEY}`)).toBe('pw=***');
   });
 });
 

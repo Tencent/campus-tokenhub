@@ -4,12 +4,12 @@
  */
 
 /**
- * 管理台账密登录的可用性判定（`ADMIN_AUTH_MODE` × `ADMIN_PASSWORD_LOGIN` × 口令强度）。
+ * 管理台「应急账密登录」的可用性判定（`ADMIN_AUTH_MODE` × `ADMIN_PASSWORD_LOGIN` × 口令强度）。
  *
- * 背景：`ADMIN_AUTH_MODE=portal` 只让 UI 隐藏账密表单，`/api/auth/login` 依旧接受
- * `ADMIN_USERNAME` / `ADMIN_PASSWORD` 并签发 `admin_session`，而 `lib/auth.ts` 对 DB 会话
- * 无条件短路。项目开源后 `.env.example` 里的 `change-me`、compose 早期默认值 `octafuse123`
- * 都是公开信息，这条「隐藏通道」足以让整套网关被接管。
+ * 门户已改为用集成密钥（`Authorization: Bearer`）调用 `/api/admin/*`，不再需要账密登录换
+ * `admin_session`；原先给门户留的 `x-tokenhub-portal-token` 内部后门已删除。
+ * 现在 `/api/auth/login` 只服务「SSO 故障时的运维应急回滚」，默认关闭：公网请求打不开，
+ * 持有 `SESSION_SECRET` 的内部调用者也不能绕过开关。
  *
  * 判定顺序即优先级：
  * 1. `portal` 模式且未显式 `ADMIN_PASSWORD_LOGIN=on` → 关闭（默认安全）；
@@ -21,7 +21,7 @@ import type { AdminAuthMode } from '@/lib/admin-auth-mode';
 
 export const ADMIN_PASSWORD_LOGIN_ENV = 'ADMIN_PASSWORD_LOGIN';
 
-/** 与门户 `OCTAFUSE_ADMIN_PASSWORD` 校验同口径：16 位起 */
+/** 网关应急账密：16 位起（与门户的集成密钥完全独立） */
 const MIN_PASSWORD_LENGTH = 16;
 
 /** 开源后人人可见的示例口令（与 compose / `.env.example` 曾出现的默认值一致） */

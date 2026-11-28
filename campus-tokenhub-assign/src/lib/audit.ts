@@ -3,7 +3,7 @@
  *
  * 两条铁律：
  * 1. 不写 API Key 明文（`sk-…` 一律打成 `sk-***`）
- * 2. 不写管理员密码 / 会话密钥（配置里的值出现就替换成 `***`）
+ * 2. 不写网关集成密钥 / 会话密钥（配置里的值出现就替换成 `***`）
  *
  * 缺省字段统一填 null，避免下游按 `undefined` 判断时字段时有时无。
  */
@@ -52,7 +52,7 @@ function configuredSecrets(): string[] {
   try {
     const cfg = getConfig();
     envSecrets.push(
-      cfg.octafuse.adminPassword,
+      cfg.octafuse.adminApiKey,
       cfg.auth.sessionSecret,
       cfg.auth.oauth2.clientSecret,
       cfg.auth.wecom.secret
@@ -69,11 +69,14 @@ function configuredSecrets(): string[] {
 
 /** 抹掉 Key 明文与配置里的高价值凭证。 */
 export function maskSecrets(text: string): string {
-  let output = text.replace(KEY_PATTERN, 'sk-***');
+  // 顺序不能反：集成密钥本身以 `sk-` 开头，先跑 KEY_PATTERN 会把它打成 `sk-***`，
+  // 之后按完整 secret 精确替换就再也匹配不上，日志里会残留 `sk-***` 这种半截形态。
+  let output = text;
   for (const secret of configuredSecrets()) {
     output = output.split(secret).join('***');
   }
-  return output;
+  // 兜底：配置外的零散 `sk-…`（例如用户直接贴进日志的 Key）统一打码
+  return output.replace(KEY_PATTERN, 'sk-***');
 }
 
 function clean(value: string | null | undefined): string | null {

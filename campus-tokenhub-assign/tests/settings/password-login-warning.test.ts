@@ -5,8 +5,7 @@ import { PASSWORD_LOGIN_RISK_NOTICE, passwordLoginRiskNotice } from '@/lib/auth/
 const baseEnv = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'T3st-Gateway-Pass-9f2c',
+  OCTAFUSE_ADMIN_API_KEY: 'sk-admin-9f2c4b7e6a1d8c530b4e2f7a9c6d1e8035',
   OCTAFUSE_EXTERNAL_SYSTEM: 'campus-tokenhub',
   SESSION_SECRET: 'K7q2mZ9rT4wX8bN3vF6hJ1sL5pY0cA2d',
   PORTAL_ADMIN_USERNAME: 'ops-admin',

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetConfigCache } from '@/lib/config';
 import { signSession } from '@/lib/auth/session';
 import {
@@ -13,8 +13,7 @@ import {
 const baseEnv = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'T3st-Gateway-Pass-9f2c',
+  OCTAFUSE_ADMIN_API_KEY: 'sk-admin-9f2c4b7e6a1d8c530b4e2f7a9c6d1e8035',
   OCTAFUSE_EXTERNAL_SYSTEM: 'school-sso',
   SESSION_SECRET: 'K7q2mZ9rT4wX8bN3vF6hJ1sL5pY0cA2d',
 };
@@ -228,5 +227,49 @@ describe('jsonError', () => {
     expect(response.status).toBe(500);
     const body = await response.json();
     expect(body.error).not.toContain('ECONNREFUSED');
+  });
+
+  it('detail 默认只进服务端日志，不下发响应体', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = jsonError(
+      new ApiError(502, '账号开通失败，请稍后重试', 'provision_failed', {
+        detail: '网关管理员登录失败',
+      })
+    );
+    const body = await response.json();
+
+    expect(body.reason).toBeUndefined();
+    expect(spy).toHaveBeenCalledWith('[api] 请求失败', expect.objectContaining({ detail: '网关管理员登录失败' }));
+    spy.mockRestore();
+  });
+
+  it('exposeDetail 时把 detail 作为 reason 下发，且与 x-request-id 同源', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = jsonError(
+      new ApiError(502, '账号开通失败，请稍后重试', 'provision_failed', {
+        detail: '网关管理员登录失败',
+        exposeDetail: true,
+      })
+    );
+    const body = await response.json();
+
+    expect(body.reason).toBe('网关管理员登录失败');
+    expect(body.request_id).toBe(response.headers.get('x-request-id'));
+    vi.restoreAllMocks();
+  });
+
+  it('reason 与日志里的 detail 都经过脱敏', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = jsonError(
+      new ApiError(502, 'x', 'y', {
+        detail: 'upstream said sk-abcdef123456 denied',
+        exposeDetail: true,
+      })
+    );
+    const body = await response.json();
+
+    expect(body.reason).not.toContain('sk-abcdef123456');
+    expect(spy.mock.calls[0][1]).toMatchObject({ detail: expect.stringContaining('sk-***') });
+    vi.restoreAllMocks();
   });
 });
