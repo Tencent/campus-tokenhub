@@ -1,7 +1,7 @@
 /**
- * Local OpenNext preview 需要 `packages/admin/.dev.vars`（gitignore）提供
- * `ADMIN_PASSWORD`。若不存在则写入本机默认 `admin` / `admin`，避免
- * `npm run dev:admin` 起服务后无法登录。
+ * Local OpenNext preview 需要 `packages/admin/.dev.vars`（gitignore）提供应急账密。
+ * 生产默认关闭账密登录（门户 SSO + 集成密钥），这里只为本地 preview 显式打开
+ * `ADMIN_PASSWORD_LOGIN=on`，避免起服务后无法登录。
  *
  * 不会覆盖已有文件；生产请用 Worker Secret，勿依赖此默认值。
  */
@@ -15,8 +15,10 @@ const target = path.join(pkgRoot, '.dev.vars');
 
 const DEFAULT_CONTENTS = `# Auto-created for local OpenNext preview (gitignored). Do not use in production.
 # Cloudflare runtime uses D1 via wrangler binding — do not set DATABASE_URL here.
+# Local-only emergency password login; production keeps ADMIN_PASSWORD_LOGIN unset.
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=admin
+ADMIN_PASSWORD=local-preview-only-9f2c4b7e
+ADMIN_PASSWORD_LOGIN=on
 `;
 
 if (fs.existsSync(target)) {
@@ -26,7 +28,7 @@ if (fs.existsSync(target)) {
 try {
 	fs.writeFileSync(target, DEFAULT_CONTENTS, { encoding: 'utf8', flag: 'wx' });
 	console.log(
-		'[ensure-dev-vars] created packages/admin/.dev.vars — console login: admin / admin (local only)',
+		'[ensure-dev-vars] created packages/admin/.dev.vars — local-only emergency password login enabled',
 	);
 } catch (e) {
 	if (e && typeof e === 'object' && 'code' in e && e.code === 'EEXIST') {

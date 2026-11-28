@@ -92,7 +92,7 @@ npm run dev:admin                     # = dev:node；根路径 API + 内置 SPA
 
 | 项 | 本地默认 |
 |----|----------|
-| 控制台登录 | 根 `.env` 的 `OCTAFUSE_ADMIN_USERNAME` / `OCTAFUSE_ADMIN_PASSWORD` |
+| 控制台登录 | 门户 SSO（`portal_session`）；应急账密由 `ADMIN_PASSWORD_LOGIN` 开关控制，默认关闭 |
 | 数据库 | 根 `.env` 的 `DATABASE_DRIVER` / `DATABASE_URL`（Postgres / MySQL，与 `dev:proxy:node` 同一库） |
 | 管理 API Bearer | 数据库 `admin_api_keys` 中的具名 Key（登录后台创建） |
 

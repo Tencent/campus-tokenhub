@@ -166,7 +166,7 @@ PORTAL_ADMIN_LOGIN=auto
 
 注意：
 
-- `OCTAFUSE_ADMIN_BASE` / `OCTAFUSE_ADMIN_PASSWORD` 是网关配置，**本站不需要**，留空或保持示例值都不影响启动；
+- `OCTAFUSE_ADMIN_BASE` / `OCTAFUSE_ADMIN_API_KEY` 是网关配置，**本站运行时不需要**，留空或保持示例值都不影响启动；`OCTAFUSE_ADMIN_API_KEY` 只被 `scripts/` 下的网关运维脚本读取（用 Bearer 调 `/api/admin/*`），成员站容器不依赖网关，也不再读取任何网关管理员账密；
 - `TENCENTCLOUD_SECRET_ID` / `_SECRET_KEY` **不要写进 `.env`**，走设置页（加密落库）。env 里即使有值，设置页保存后也以数据库为准；
 - 本仓库的运行期配置**仍保留 env 兜底**（与统一采买站不同，尚未收口），但一律优先用设置页。
 

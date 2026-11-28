@@ -164,7 +164,7 @@ cp .env.example .env
 openssl rand -base64 48   # SESSION_SECRET
 openssl rand -hex 24      # POSTGRES_PASSWORD
 openssl rand -hex 12      # PORTAL_ADMIN_PASSWORD（人登录用的部署管理员口令）
-openssl rand -base64 18   # OCTAFUSE_ADMIN_PASSWORD（门户调网关 API 的服务账号，机器对机器）
+# OCTAFUSE_ADMIN_API_KEY 在网关后台「系统集成 → 集成密钥」创建后填入 .env（集成密钥，不是口令）
 ```
 
 必须写在 `.env` 的配置（基础设施与启动必需）：
@@ -175,8 +175,7 @@ SESSION_SECRET=<48 字符随机串>
 POSTGRES_PASSWORD=<24 位十六进制>
 
 # 网关
-OCTAFUSE_ADMIN_USERNAME=admin
-OCTAFUSE_ADMIN_PASSWORD=<强口令>
+OCTAFUSE_ADMIN_API_KEY=<网关后台「系统集成 → 集成密钥」签发>
 OCTAFUSE_EXTERNAL_SYSTEM=campus-tokenhub
 
 # 对外地址（均为浏览器访问地址，含前缀）
@@ -206,7 +205,7 @@ PORTAL_ADMIN_LOGIN=auto
 
 共享配置是唯一权威：**首次启动**若库里还没有口令，会把 `.env` 这两项加密写进 `portal_shared.login_config`（与设置页同一列），之后改 `.env` 不再生效（启动日志会提示被忽略）。同库双站部署因此读同一行、天然一致；分栈部署（两套 compose、两个库）没有共享行，必须把两处写成同一个值。
 
-> `OCTAFUSE_ADMIN_USERNAME` / `OCTAFUSE_ADMIN_PASSWORD` 不是这套登录口令：它是门户调用网关 admin API 的服务账号（Basic 登录 `/api/auth/login`）。管理台（`ADMIN_AUTH_MODE=portal`）的人工登录走的就是上面的 portal 会话，没有第三个口令。
+> `OCTAFUSE_ADMIN_API_KEY` 不是登录口令：它是门户服务端调用网关 `/api/admin/*` 的集成密钥（`Authorization: Bearer`），在网关后台「系统集成 → 集成密钥」创建。管理台（`ADMIN_AUTH_MODE=portal`）的人工登录走上面的 portal 会话；网关应急账密由 `ADMIN_PASSWORD_LOGIN` 控制，默认关闭，与门户凭据完全独立。
 
 ### 3. 启动
 
@@ -329,7 +328,7 @@ npm run bootstrap-admin -- "school_001:100234567"
 | --- | --- |
 | `SESSION_SECRET` | 32 字符以上随机串，用于签发会话 |
 | `POSTGRES_PASSWORD` | 数据库口令，建议只用十六进制字符 |
-| `OCTAFUSE_ADMIN_USERNAME` / `_PASSWORD` | 网关管理台账号，门户用于服务端调用 |
+| `OCTAFUSE_ADMIN_API_KEY` | 网关后台集成密钥，门户服务端调 `/api/admin/*` 用 Bearer |
 | `OCTAFUSE_EXTERNAL_SYSTEM` | 外部身份命名空间，如 `campus-tokenhub`，无默认值 |
 | `PUBLIC_BASE_URL` | 对外访问根地址，含路径前缀 |
 
@@ -440,7 +439,7 @@ npm run bootstrap-admin -- "school_001:100234567"
 - **访问权限**：`portal_shared.admins` 名单内的用户。登录门户时门户会向会话写入管理员声明，管理台只认该声明。
 - **白名单为空**：无人可登录管理台，请先配置白名单。
 - **退出**：配置 `PORTAL_LOGOUT_URL` 后，退出管理台会同时清除门户会话。
-- **模式切换**：`ADMIN_AUTH_MODE` 可设为 `portal`（默认，仅认门户会话）、`password`（回到账号密码）、`both`。需要临时切换时修改这一项并重启管理台即可，无需更换版本。
+- **模式切换**：`ADMIN_AUTH_MODE` 可设为 `portal`（默认，仅认门户会话）、`password`（回到账号密码）、`both`。账密通道默认关闭，应急时除切换模式外还需设 `ADMIN_PASSWORD_LOGIN=on` 并配置独立的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`（与门户的 `OCTAFUSE_ADMIN_API_KEY` 无关），改完重启管理台，用完把开关改回空并清空口令。
 
 ---
 

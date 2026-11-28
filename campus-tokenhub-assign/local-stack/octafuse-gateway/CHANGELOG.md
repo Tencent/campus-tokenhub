@@ -15,6 +15,7 @@
 
 ### Admin
 
+- **门户改集成密钥、删除账密内部后门（本校定制，与上游差异，2026-11-27）**：门户服务端统一用 `Authorization: Bearer <ADMIN_API_KEY>` 调 `/api/admin/*`，不再持管理员账密登录换 `admin_session`；因此删除 `x-tokenhub-portal-token` 共享密钥头与 `isPortalInternalCall()` 内部调用分支。账密登录保留为 SSO 故障时的应急回滚路径，由 `ADMIN_AUTH_MODE` × `ADMIN_PASSWORD_LOGIN` 控制，默认关闭；应急凭据（`ADMIN_USERNAME` / `ADMIN_PASSWORD`）与门户集成密钥完全独立、默认留空。`/api/auth/login` 在通道关闭或凭据缺失时返回 403（不再返回 500 泄漏配置状态）；`/api/auth/check` 恒 200 的健康检查契约不变。
 - **创建用户可带用户级限流（本校定制，与上游差异）**：`POST /admin/users` 接受 `rate_limit`（与 PATCH 同形状，含 `tpm`），但**只在真正建号时**写入——按 `(external_system, external_user_id)` 命中已存在用户时忽略该字段，避免「每次登录都发开户请求」的调用方覆盖管理员后续调整。配套：门户新增「开户默认 RPM / TPM」配置项，并支持把默认值写到存量用户——默认只补空缺，另有「同时刷新已配置限流的用户」开关可显式覆盖。
 - **限流可配置 TPM（本校定制，与上游差异）**：Keys 页编辑弹窗与用户详情「概览」各新增 TPM 输入（留空表示不限，只接受非负整数），列表与详情按已配置维度并列展示 `x RPM / y TPM`；`PATCH /admin/keys/:id` 与 `PATCH /admin/users/:id` 的 `rate_limit` 接受 `{rpm?, tpm?}`，两维可只配其一。
 - **管理员复核读门户名单（本校定制，与上游差异）**：`isPortalAdminStillAllowed` 新增 `portal.member_admins` 来源，经 `StorageContext.client` 直查（前提：管理台与门户共库），判定顺序对齐门户 `resolvePortalAdmin`——名单命中 → `PORTAL_ADMIN_EMAILS` → `ONBOARDING_OWNER`。此前只认环境变量白名单与 owner，门户管理员页加进来的人会被判 `not_admin`。`authenticateAdminRequest` / `resolveAdminCredential` / `resolveAdminAuthState` 增加 `client` 入参，`/api/admin/[...path]`、`admin-node-realtime`、`admin-realtime-worker`、`/api/auth/check` 均传入 `storage.client`；名单表读不到（无连接 / 非 Postgres / 无权限 / 表不存在）时退回原有口径。新增 `lib/portal-admin-store.ts`。

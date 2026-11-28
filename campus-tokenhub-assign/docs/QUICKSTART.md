@@ -148,18 +148,17 @@ cp .env.example .env
 openssl rand -base64 48   # SESSION_SECRET
 openssl rand -hex 24      # POSTGRES_PASSWORD
 openssl rand -hex 12      # PORTAL_ADMIN_PASSWORD：人登录用的部署管理员口令
-openssl rand -base64 18   # OCTAFUSE_ADMIN_PASSWORD：门户调网关 API 的服务账号
+# OCTAFUSE_ADMIN_API_KEY 在网关后台「系统集成 → 集成密钥」创建后填入 .env
 ```
 
-**只有一个口令是给人用的**：`PORTAL_ADMIN_PASSWORD`。首次启动会把它加密写进共享配置，此后以库内为准，改 `.env` 不再生效。同库双站部署两站读同一行、天然一致；分栈部署（两个库）则必须把两处写成同一个值。网关管理台（`ADMIN_AUTH_MODE=portal`）用同一套 portal 账号登录，不需要第三个口令；`OCTAFUSE_ADMIN_*` 是机器对机器的服务凭据，别当登录口令用。
+**只有一个口令是给人用的**：`PORTAL_ADMIN_PASSWORD`。首次启动会把它加密写进共享配置，此后以库内为准，改 `.env` 不再生效。同库双站部署两站读同一行、天然一致；分栈部署（两个库）则必须把两处写成同一个值。网关管理台（`ADMIN_AUTH_MODE=portal`）用同一套 portal 账号登录，不需要第三个口令；`OCTAFUSE_ADMIN_API_KEY` 是机器对机器的集成密钥（`Authorization: Bearer`），别当登录口令用。网关应急账密由 `ADMIN_PASSWORD_LOGIN` 控制，默认关闭。
 
 写入以下键（值用上一步生成）：
 
 ```bash
 SESSION_SECRET=
 POSTGRES_PASSWORD=
-OCTAFUSE_ADMIN_USERNAME=admin
-OCTAFUSE_ADMIN_PASSWORD=
+OCTAFUSE_ADMIN_API_KEY=<网关后台集成密钥>
 OCTAFUSE_EXTERNAL_SYSTEM=campus-tokenhub
 
 # 本地也必须带前缀，否则页面 404

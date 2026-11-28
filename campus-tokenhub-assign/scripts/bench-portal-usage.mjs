@@ -45,28 +45,14 @@ function psql(sql) {
   ).trim();
 }
 
-/** 从项目 .env 读管理台账号（与容器内一致） */
-function adminCredentials() {
+/** 从项目 .env 读网关集成密钥（与门户 config 用同一个变量） */
+function adminApiKey() {
+  const fromEnv = process.env.OCTAFUSE_ADMIN_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
   const envText = readFileSync(new URL('../.env', import.meta.url), 'utf8');
-  const read = (key) => envText.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1]?.trim() ?? '';
-  return {
-    username: read('OCTAFUSE_ADMIN_USERNAME') || 'admin',
-    password: read('OCTAFUSE_ADMIN_PASSWORD'),
-  };
-}
-
-async function login() {
-  const { username, password } = adminCredentials();
-  if (!password) throw new Error('未在 .env 中找到 OCTAFUSE_ADMIN_PASSWORD');
-  const response = await fetch(`${ADMIN_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!response.ok) throw new Error(`管理台登录失败：${response.status}`);
-  const cookie = response.headers.get('set-cookie');
-  if (!cookie) throw new Error('管理台登录未返回会话 Cookie');
-  return cookie.split(';')[0];
+  const key = envText.match(/^OCTAFUSE_ADMIN_API_KEY=(.*)$/m)?.[1]?.trim() ?? '';
+  if (!key) throw new Error('未在 .env 中找到 OCTAFUSE_ADMIN_API_KEY');
+  return key;
 }
 
 function pickTargetUser() {
@@ -101,7 +87,7 @@ function seed(userId) {
   console.log(`[bench] 汇总表 bench 行数：${total}`);
 }
 
-async function measure(cookie, userId) {
+async function measure(apiKey, userId) {
   const url = `${ADMIN_BASE}/api/admin/portal-usage/summary?user_id=${userId}&days=${DAYS}`;
   const samples = [];
   let payloadBytes = 0;
@@ -109,7 +95,7 @@ async function measure(cookie, userId) {
 
   for (let index = 0; index < ROUNDS; index += 1) {
     const startedAt = process.hrtime.bigint();
-    const response = await fetch(url, { headers: { cookie } });
+    const response = await fetch(url, { headers: { authorization: `Bearer ${apiKey}` } });
     const text = await response.text();
     const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
     if (!response.ok) throw new Error(`summary 请求失败：${response.status} ${text.slice(0, 200)}`);
@@ -148,11 +134,11 @@ function cleanup() {
 
 async function main() {
   const userId = pickTargetUser();
-  const cookie = await login();
+  const apiKey = adminApiKey();
   console.log(`[bench] 目标用户：${userId}`);
 
   seed(userId);
-  const result = await measure(cookie, userId);
+  const result = await measure(apiKey, userId);
 
   const apiRequests = Number(result.body?.data?.kpis?.requests ?? 0);
   const check = reconcile(userId, apiRequests);

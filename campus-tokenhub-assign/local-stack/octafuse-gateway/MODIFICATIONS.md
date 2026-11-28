@@ -60,6 +60,8 @@
 - `/api/auth/check` 改为四态返回并恒为 200，`mode` 由运行期 `ADMIN_AUTH_MODE` 控制
 - portal 模式下账密登录默认关闭（2026-11-27）：`/api/auth/login` 按 `ADMIN_AUTH_MODE` × `ADMIN_PASSWORD_LOGIN` × 口令强度判定，未显式 `ADMIN_PASSWORD_LOGIN=on` 或口令为公开示例值（`change-me` / `octafuse123` 等）时返回 403 且不签发会话
   - `packages/admin/lib/admin-password-policy.ts`（新增，含单测）、`app/api/auth/login/route.ts`
+- 门户改用集成密钥、删除账密内部后门（2026-11-27 二次改动）：门户服务端统一 `Authorization: Bearer <OCTAFUSE_ADMIN_API_KEY>` 调 `/api/admin/*`，不再登录换 `admin_session`；删除 `x-tokenhub-portal-token` 共享密钥头与 `isPortalInternalCall()` 绕过逻辑，`resolveAdminPasswordLogin` 只认模式与开关，公网请求与内部请求一视同仁。应急账密（`ADMIN_USERNAME` / `ADMIN_PASSWORD`）与门户集成密钥拆成两套独立变量，默认留空；通道关闭或凭据缺失时返回 403（原为 500，避免泄漏服务器配置状态）
+  - 门户 `src/lib/config.ts`、`src/lib/gateway/client.ts`、`docker-compose*.yml`、`.env.example`、脚本与文档；网关 `packages/admin/lib/admin-password-policy.ts`、`app/api/auth/login/route.ts`、`scripts/verify-production.mjs`
 - 登出在配置 `PORTAL_LOGOUT_URL` 时服务端代理门户登出并透传 `Set-Cookie`
   - `packages/admin/lib/portal-logout.ts`、`app/api/auth/logout/route.ts`
 - 管理台登录改为本地限流（`packages/admin/lib/login-rate-limit.ts`），取代上游的 `admin-login-guard` 与 `LoginLockoutDialog`

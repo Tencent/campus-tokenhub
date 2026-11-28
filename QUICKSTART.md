@@ -58,24 +58,26 @@ ls docker-compose.yml campus-tokenhub-assign/.env.dual         # 部署文件与
 cp campus-tokenhub-assign/.env.dual.example campus-tokenhub-assign/.env.dual
 ```
 
-**必须问用户**这两个值，不要自己编：
+**必须由用户提供**这三项，不要自己编：
 
 1. **对外根地址** `PUBLIC_BASE_URL`：浏览器实际访问的地址，本机可用 `http://localhost:8088`，服务器填 `https://<域名>`。必须与 nginx 对外访问一致，否则 302 和 Cookie 会错。
-2. **强口令**：`POSTGRES_PASSWORD`、`OCTAFUSE_ADMIN_PASSWORD`。
+2. **数据库口令** `POSTGRES_PASSWORD`：强口令。
+3. **网关集成密钥** `OCTAFUSE_ADMIN_API_KEY`：由用户在网关后台「系统集成 → 集成密钥」创建具名最小权限 Key 后提供。它是机器对机器凭据（门户服务端 `Authorization: Bearer` 调 `/api/admin/*`），**不是账号密码**；门户不再持有网关管理员账密。
 
-**自动生成**（不要问用户，直接算，但不要把结果打印到回复里）：
+`POSTGRES_PASSWORD` / `SESSION_SECRET` / `CONFIG_ENCRYPTION_KEY` 可自动生成（不要问用户，直接算，但**不要把结果打印到回复里**）：
 
 ```bash
+POSTGRES_PASSWORD=$(openssl rand -hex 24)   # 只用十六进制，避免破坏 DATABASE_URL
 # 会话签名密钥，两站必须相同；低熵会被启动校验拒绝
 SESSION_SECRET=$(openssl rand -base64 48)
 # 配置表加密材料，留空会从 SESSION_SECRET 派生（轮换密钥会让已存密文失效，故显式生成）
 CONFIG_ENCRYPTION_KEY=$(openssl rand -base64 48)
 ```
 
-写入 `.env.dual` 后逐项核对：
+写入 `.env.dual` 后逐项核对变量名（**只打印变量名，不要打印值**——下面用 `sed` 把等号后的内容抹掉）：
 
 ```bash
-grep -E '^(PUBLIC_BASE_URL|SESSION_SECRET|CONFIG_ENCRYPTION_KEY|POSTGRES_PASSWORD|COOKIE_SECURE|PORTAL_COOKIE_PATH|OCTAFUSE_ADMIN_USERNAME|OCTAFUSE_ADMIN_PASSWORD|NGINX_HOST_PORT)=' campus-tokenhub-assign/.env.dual
+grep -E '^(PUBLIC_BASE_URL|SESSION_SECRET|CONFIG_ENCRYPTION_KEY|POSTGRES_PASSWORD|COOKIE_SECURE|PORTAL_COOKIE_PATH|OCTAFUSE_ADMIN_API_KEY|NGINX_HOST_PORT)=' campus-tokenhub-assign/.env.dual | sed 's/=.*/=<已设置>/'
 ```
 
 | 变量 | 正确值 | 说明 |
@@ -85,9 +87,11 @@ grep -E '^(PUBLIC_BASE_URL|SESSION_SECRET|CONFIG_ENCRYPTION_KEY|POSTGRES_PASSWOR
 | `CONFIG_ENCRYPTION_KEY` | 高熵随机串 | 同上 |
 | `PORTAL_COOKIE_PATH` | `/tokenhub` | **必须是两站公共前缀**，填成各自前缀会各存一份 Cookie、互认断掉 |
 | `COOKIE_SECURE` | 本地 `false`，上 TLS `true` | 本地填 true 会被浏览器丢弃 Cookie |
-| `OCTAFUSE_ADMIN_USERNAME` / `_PASSWORD` | 非空 | 管理台账密，assign 站依赖 |
+| `OCTAFUSE_ADMIN_API_KEY` | 网关后台「系统集成 → 集成密钥」签发的具名 Key | 门户服务端调 `/api/admin/*` 用 `Authorization: Bearer`；示例值会被门户启动校验拒绝。与网关应急账密**完全独立** |
 | `NEXT_PUBLIC_PROXY_BASE` | 浏览器可达的网关地址（如 `https://<域名>/tokenhub`） | 界面展示的「接口地址 / 示例代码 / 接入脚本」都用它；留空会显示 `/v1/...` 相对地址，复制出去调不通 |
 | `ADMIN_PUBLIC_BASE_URL` | 管理台公网地址（如 `http://localhost:8088/tokenhub/admin`） | 留空时侧边栏不显示「网关管理后台」入口 |
+
+> 网关应急账密（`ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_PASSWORD_LOGIN`）**正常部署一律留空**，账密登录恒 403。只有 SSO 故障需回滚时才临时设置并重启管理台，用完清空。详见 `campus-tokenhub-assign/.env.dual.example`。
 
 登录对接参数（OAuth2 / CAS）由 `portal-seed` 从 `campus-tokenhub-assign/deploy/init/010-login-config.sql` 写入数据库，**只填空值、不覆盖已有配置**。`client_secret` 绝不写进 SQL 或 env，让用户稍后在设置页填。
 
@@ -161,6 +165,8 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://127.0.0.1:8088/t
 | 成员站页面 404 / `_next` 资源 404 | 镜像未带 basePath：确认 compose 里 `build.args.PORTAL_BASE_PATH=/tokenhub/member` 且用了 `--build` |
 | 登录后跳回登录页 | 两站 Cookie 冲突：`PORTAL_COOKIE_PATH=/tokenhub`、清浏览器同名 Cookie、确认没有再从直连端口访问 |
 | 管理台 401 | `PORTAL_SESSION_SECRET` 是否与两站 `SESSION_SECRET` 一致 |
+| 门户启动报 `OCTAFUSE_ADMIN_API_KEY` / 调网关 401、403 | 集成密钥缺失、示例值、已轮换或权限不足：去网关后台「系统集成 → 集成密钥」重新签发具名 Key（含 `providers.secrets.read`），写回 `.env.dual` 后重启门户 |
+| `/api/auth/login` 返回 403 | **预期行为**：账密通道默认关闭，门户已改走集成密钥；仅 SSO 故障回滚才临时设 `ADMIN_PASSWORD_LOGIN=on` + 独立 `ADMIN_USERNAME` / `ADMIN_PASSWORD` |
 | 「接入指南」里的接口地址是 `localhost:8790` 或 `/v1/...` | `NEXT_PUBLIC_PROXY_BASE` 没配或配成了容器内地址：改成浏览器可达的网关地址（如 `https://<域名>/tokenhub`），两站镜像要带 `--build` 重建 |
 | 侧边栏没有「网关管理后台」入口 | `ADMIN_PUBLIC_BASE_URL` 留空时不显示该入口；填成 `http://<host>:8088/tokenhub/admin` |
 | 构建失败 | `docker compose build <服务名>` 看完整输出；不要改 Dockerfile 绕开 |

@@ -337,7 +337,7 @@
     <li><b>一条没画在主线上的隐式调用。</b>模型集市的数据实际来自代理服务暴露的公开目录 <code>GET /catalog/models</code>（无认证，网关进程内缓存 45 秒）。它不构成业务依赖——推理流量与门户无关——但排查「刚初始化完模型没出现」会踩到：网关 45 秒 + 门户 15 秒两层缓存。</li>
     <li><b>门户不代理推理流量。</b>学生调模型是浏览器 / 终端直连 <code>NEXT_PUBLIC_PROXY_BASE</code>，Key 只在客户端内存，门户只负责下发与吊销。</li>
     <li><b>三路分流的差异有原因：</b>门户是 Next，页面里写的是根绝对路径 <code>/_next/…</code>，反代剥前缀会 404 或抢共享域名的根路径，所以自带 <code>basePath</code> 原样透传；管理台与推理 API 都按根路径运行，剥一次即可。</li>
-    <li><b>权限放大点：</b>门户服务端持有网关管理员账密，换 <code>admin_session</code> 后读写全站用户与密钥，进程内做登录单飞避免触发管理台锁定。这是整套架构里唯一需要严格守住的凭证边界。</li>
+    <li><b>权限放大点：</b>门户服务端持有网关「集成密钥」（具名最小权限 Admin API Key），以 <code>Authorization: Bearer</code> 读写全站用户与密钥；已不再持有管理员账密、不再换 <code>admin_session</code>。这是整套架构里唯一需要严格守住的凭证边界。</li>
     <li><b>数据边界：</b>额度、密钥、调用日志、模型目录、初始化状态全部实时读网关，门户不落盘；只有活动配置、管理员名单等业务表 + 配置表落在 <code>portal.*</code>。</li>
     <li><b>部署时序：</b><code>postgres</code> → <code>migrate</code>（建表 + 种子，跑完退出）→ <code>gateway-proxy</code> / <code>gateway-admin</code> → <code>portal</code> → <code>portal-seed</code>（只填空值，不覆盖设置页改过的配置）→ <code>nginx</code>，前一步健康才起下一步。</li>
   </ul>
@@ -427,7 +427,7 @@
 
     <!-- ⑨ 开户（权限放大点） -->
     <path d="M440,518 L992,518" fill="none" stroke="#DC2626" stroke-width="1.9" marker-end="url(#a2r)"/>
-    <text class="mt" x="452" y="508" fill="#B91C1C">⑨ POST /api/admin/users　★ 服务端持管理员账密换 admin_session</text>
+    <text class="mt" x="452" y="508" fill="#B91C1C">⑨ POST /api/admin/users　★ 服务端持集成密钥 Bearer 直调</text>
 
     <!-- ⑩ upsert -->
     <path d="M1000,562 L1282,562" fill="none" stroke="#8FA0B5" stroke-width="1.6" marker-end="url(#a2)"/>
@@ -772,7 +772,7 @@
 
     <rect x="40" y="496" width="1360" height="74" rx="11" fill="#FEF5F5" stroke="#FAC4C4" stroke-width="1.2"/>
     <text class="st" x="60" y="520" fill="#B91C1C" font-weight="600">凭证与权限边界</text>
-    <text class="tag" x="60" y="541" fill="#8A3B3B">① 门户 .env 里的网关管理员账密能读写全站用户与密钥 —— 最高密级凭证，日志里出现一次即等同全站泄露</text>
+    <text class="tag" x="60" y="541" fill="#8A3B3B">① 门户 .env 里的网关集成密钥能读写全站用户与密钥 —— 最高密级凭证，日志里出现一次即等同全站泄露</text>
     <text class="tag" x="60" y="559" fill="#8A3B3B">② 学校云厂商 Key 只进 providers.api_key（服务端加密流转），不进 .env、不进镜像、不进日志</text>
       </g>
   </svg>

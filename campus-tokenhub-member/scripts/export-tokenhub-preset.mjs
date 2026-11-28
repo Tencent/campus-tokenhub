@@ -2,10 +2,14 @@
 /**
  * 从运行中的 OctaFuse 网关导出「推荐模型清单」，落盘成门户初始化用的 preset。
  *
- *   node scripts/export-tokenhub-preset.mjs [--provider tencent-tokenhub] [--out <path>]
+ *   OCTAFUSE_ADMIN_API_KEY=<网关后台集成密钥> node scripts/export-tokenhub-preset.mjs [--provider tencent-tokenhub] [--out <path>]
  *
  * 读取顺序：进程环境变量 → 仓库根 .env。
- *   OCTAFUSE_ADMIN_BASE / OCTAFUSE_ADMIN_USERNAME / OCTAFUSE_ADMIN_PASSWORD
+ *   OCTAFUSE_ADMIN_BASE / OCTAFUSE_ADMIN_API_KEY（网关后台「系统集成 → 集成密钥」签发）
+ *
+ * 认证：门户已改用集成密钥 Bearer 调 /api/admin/*；网关账密登录默认关闭，
+ * 不再走 /api/auth/login 换 admin_session。成员站运行时不依赖网关，本脚本只在
+ * 网关运维时手动执行，需自行提供集成密钥（建议用 assign 站同一把具名 Key）。
  *
  * 只导出 provider / models / routes 三类公开配置，**不含任何 API Key**：
  * 门户初始化时由学校自己录入。重新对齐后把新文件放回
@@ -41,28 +45,15 @@ const PROVIDER_ID = arg('provider', 'tencent-tokenhub');
 const TODAY = new Date().toISOString().slice(0, 10);
 const OUT = resolve(ROOT, arg('out', `src/lib/onboarding/presets/tokenhub-${TODAY}.json`));
 
-const username = process.env.OCTAFUSE_ADMIN_USERNAME;
-const password = process.env.OCTAFUSE_ADMIN_PASSWORD;
-if (!username || !password) {
-  console.error('缺少 OCTAFUSE_ADMIN_USERNAME / OCTAFUSE_ADMIN_PASSWORD（可在仓库根 .env 里配置）');
+const apiKey = process.env.OCTAFUSE_ADMIN_API_KEY?.trim();
+if (!apiKey) {
+  console.error('缺少 OCTAFUSE_ADMIN_API_KEY（网关后台「系统集成 → 集成密钥」签发，可通过环境变量或仓库根 .env 提供）');
   process.exit(1);
 }
 
-async function login() {
-  const response = await fetch(`${ADMIN_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!response.ok) throw new Error(`管理员登录失败：HTTP ${response.status}`);
-  const cookie = response.headers.getSetCookie?.()[0] ?? response.headers.get('set-cookie');
-  if (!cookie) throw new Error('管理员登录未返回会话 Cookie');
-  return cookie.split(';')[0];
-}
-
-async function get(cookie, path) {
+async function get(path) {
   const response = await fetch(`${ADMIN_BASE}${path}`, {
-    headers: { cookie, accept: 'application/json' },
+    headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
@@ -85,13 +76,12 @@ function limit(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-const cookie = await login();
-const providers = (await get(cookie, '/api/admin/providers')).data ?? [];
+const providers = (await get('/api/admin/providers')).data ?? [];
 const provider = providers.find((item) => item.id === PROVIDER_ID);
 if (!provider) throw new Error(`网关里找不到 provider：${PROVIDER_ID}`);
 
-const models = (await get(cookie, '/api/admin/models')).data ?? [];
-const routes = (await get(cookie, `/api/admin/routes?provider_id=${encodeURIComponent(PROVIDER_ID)}`)).data ?? [];
+const models = (await get('/api/admin/models')).data ?? [];
+const routes = (await get(`/api/admin/routes?provider_id=${encodeURIComponent(PROVIDER_ID)}`)).data ?? [];
 const routeByModel = new Map(routes.map((route) => [route.model_id, route]));
 
 const entries = models

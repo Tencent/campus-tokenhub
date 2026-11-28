@@ -202,6 +202,10 @@ async function startStack() {
 		'-e',
 		`ADMIN_PASSWORD=${ADMIN_PASSWORD}`,
 		'-e',
+		// 这个检查用账密表单走 UI 全流程，属于「应急回滚路径」：显式打开开关。
+		// 正常部署默认关闭账密登录，人类登录走门户 SSO。
+		'ADMIN_PASSWORD_LOGIN=on',
+		'-e',
 		'ADMIN_COOKIE_SECURE=',
 		// 镜像按 PREFIX 构建，入口脚本会用这个运行期值做前缀自检；
 		// 不一致会直接 exit 1，正好也覆盖“前缀不匹配就拒绝启动”的反向行为。

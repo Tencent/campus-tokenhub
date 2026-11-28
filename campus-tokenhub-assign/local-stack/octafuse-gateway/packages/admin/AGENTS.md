@@ -67,8 +67,8 @@ After changing `@octafuse/core` types used by Admin (adapters, route topology, m
 
 | Variable | Purpose |
 |----------|---------|
-| `ADMIN_USERNAME` | Console login username; container env (root `.env` → Compose). |
-| `ADMIN_PASSWORD` | Console login password; **do not** commit. Local: root `.env`; production: container env / deployment platform. |
+| `ADMIN_USERNAME` | Emergency password-login username; disabled by default (container env). |
+| `ADMIN_PASSWORD` | Emergency password-login password; **do not** commit. Effective only together with `ADMIN_PASSWORD_LOGIN=on`. |
 | `ADMIN_UI_PUBLIC_PATH` | Public prefix for the SPA (e.g. `/tokenhub/admin`). **Build-time, front-end only**; the Node entry always serves root paths and nginx strips the prefix. |
 | `ADMIN_COOKIE_SECURE` | Optional hardening. Unset by default (**no** `Secure` on `admin_session`, so plain HTTP works). Set `1`/`true`/`yes`/`on` only if Admin is already served over HTTPS and you want the browser to send the session cookie on HTTPS only — see [`docs/operators/deployment/docker.md`](../../docs/operators/deployment/docker.md) §7.3. |
 | `DATABASE_URL` | **Node / self-hosted Postgres** (same name as `@octafuse/proxy` Node). |

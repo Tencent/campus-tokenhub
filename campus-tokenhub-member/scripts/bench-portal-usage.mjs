@@ -8,7 +8,11 @@
  *
  * 前提（本地）：
  *   docker compose up -d postgres migrate gateway-admin
- *   node scripts/bench-portal-usage.mjs [--users 3000] [--rounds 10] [--keep]
+ *   OCTAFUSE_ADMIN_API_KEY=<网关后台集成密钥> node scripts/bench-portal-usage.mjs [--users 3000] [--rounds 10] [--keep]
+ *
+ * 认证：门户已改用网关后台「系统集成 → 集成密钥」签发的具名 Admin API Key，
+ * 以 Authorization: Bearer 调 /api/admin/*；网关账密登录默认关闭，不再走 /api/auth/login 换 Cookie。
+ * 成员站运行时不依赖网关，本脚本只在网关运维/对账时手动执行，需自行提供集成密钥。
  *
  * 做的事：
  * 1. 找一个已存在的网关用户作为压测目标；
@@ -45,28 +49,16 @@ function psql(sql) {
   ).trim();
 }
 
-/** 从项目 .env 读管理台账号（与容器内一致） */
-function adminCredentials() {
+/** 读网关集成密钥：优先进程环境变量，其次项目 .env（与门户 config 用同一个变量） */
+function adminApiKey() {
+  const fromEnv = process.env.OCTAFUSE_ADMIN_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
   const envText = readFileSync(new URL('../.env', import.meta.url), 'utf8');
-  const read = (key) => envText.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1]?.trim() ?? '';
-  return {
-    username: read('OCTAFUSE_ADMIN_USERNAME') || 'admin',
-    password: read('OCTAFUSE_ADMIN_PASSWORD'),
-  };
-}
-
-async function login() {
-  const { username, password } = adminCredentials();
-  if (!password) throw new Error('未在 .env 中找到 OCTAFUSE_ADMIN_PASSWORD');
-  const response = await fetch(`${ADMIN_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!response.ok) throw new Error(`管理台登录失败：${response.status}`);
-  const cookie = response.headers.get('set-cookie');
-  if (!cookie) throw new Error('管理台登录未返回会话 Cookie');
-  return cookie.split(';')[0];
+  const key = envText.match(/^OCTAFUSE_ADMIN_API_KEY=(.*)$/m)?.[1]?.trim() ?? '';
+  if (!key) {
+    throw new Error('缺少 OCTAFUSE_ADMIN_API_KEY：请在网关后台「系统集成 → 集成密钥」创建具名 Key 后，通过环境变量或 .env 提供');
+  }
+  return key;
 }
 
 function pickTargetUser() {
@@ -101,7 +93,7 @@ function seed(userId) {
   console.log(`[bench] 汇总表 bench 行数：${total}`);
 }
 
-async function measure(cookie, userId) {
+async function measure(apiKey, userId) {
   const url = `${ADMIN_BASE}/api/admin/portal-usage/summary?user_id=${userId}&days=${DAYS}`;
   const samples = [];
   let payloadBytes = 0;
@@ -109,7 +101,9 @@ async function measure(cookie, userId) {
 
   for (let index = 0; index < ROUNDS; index += 1) {
     const startedAt = process.hrtime.bigint();
-    const response = await fetch(url, { headers: { cookie } });
+    const response = await fetch(url, {
+      headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
+    });
     const text = await response.text();
     const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
     if (!response.ok) throw new Error(`summary 请求失败：${response.status} ${text.slice(0, 200)}`);
@@ -147,12 +141,12 @@ function cleanup() {
 }
 
 async function main() {
+  const apiKey = adminApiKey();
   const userId = pickTargetUser();
-  const cookie = await login();
   console.log(`[bench] 目标用户：${userId}`);
 
   seed(userId);
-  const result = await measure(cookie, userId);
+  const result = await measure(apiKey, userId);
 
   const apiRequests = Number(result.body?.data?.kpis?.requests ?? 0);
   const check = reconcile(userId, apiRequests);

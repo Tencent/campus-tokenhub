@@ -49,7 +49,7 @@ docker compose version
 | 页面 404，容器全 healthy | 请求路径不带前缀也通 | `.env` 的 `PORTAL_BASE_PATH` 必须是 `/tokenhub/portal`，改完 `--build` |
 | 页面能开但静态资源 404 | 控制台 `/_next/...` 报错 | 同上，构建期参数不一致 |
 | 全栈 nginx 502 | `docker compose logs nginx` 有 `connect() failed` | 应用容器重建后 IP 变了，`docker compose restart nginx` |
-| health `gateway:false` | `logs gateway-admin` 有 401 或连接拒绝 | 检查 `OCTAFUSE_ADMIN_USERNAME/_PASSWORD` 与 `OCTAFUSE_ADMIN_BASE`（容器内是服务名） |
+| health `gateway:false` | `logs gateway-admin` 有 401 或连接拒绝 | 检查 `OCTAFUSE_ADMIN_API_KEY` 是否有效且权限齐全、`OCTAFUSE_ADMIN_BASE`（容器内是服务名） |
 | 种子执行了但库是空的 | 查 `login_config` 全 NULL | SQL 顶部参数没填；或表名写错（必须是 `portal_shared.login_config`） |
 | `migrate` 退出码 1 | `logs migrate` 显示认证失败 | `POSTGRES_PASSWORD` 与 compose 插值不一致；确认 `.env` 无多余空格 |
 | 登录成功又跳回登录页 | 浏览器有两个同名 `portal_session` | 清 Cookie；确认没有同时从 3000 和 8088 访问过 |

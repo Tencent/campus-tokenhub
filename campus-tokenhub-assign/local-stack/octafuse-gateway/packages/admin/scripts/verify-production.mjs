@@ -198,6 +198,10 @@ async function main() {
 		'-e',
 		`ADMIN_PASSWORD=${ADMIN_PASSWORD}`,
 		'-e',
+		// 本脚本验证「应急账密回滚路径」：显式打开开关后才能走下面的登录断言。
+		// 生产默认关闭（403）由 admin-password-policy.test.ts 覆盖。
+		'ADMIN_PASSWORD_LOGIN=on',
+		'-e',
 		'ADMIN_COOKIE_SECURE=',
 		'-e',
 		'AUTO_MIGRATE=1',

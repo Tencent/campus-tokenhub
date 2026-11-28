@@ -9,7 +9,7 @@
 
 ## 环境
 
-- **`ADMIN_USERNAME` / `ADMIN_PASSWORD`**：控制台登录。本地 `dev:admin`：读 `.env`；生产：容器环境变量（Docker Compose 或部署平台注入）。
+- **`ADMIN_USERNAME` / `ADMIN_PASSWORD`**：应急账密，默认不配置；账密登录由 `ADMIN_PASSWORD_LOGIN` 控制，默认关闭（403）。人类正常登录走门户 SSO（`portal_session`），外部系统调 `/api/admin/*` 用后台签发的集成密钥 `Authorization: Bearer <ADMIN_API_KEY>`。
 - **数据库**：根 `.env` 的 **`DATABASE_URL`** + **`DATABASE_DRIVER`**（Node；Postgres / MySQL）；须与 Proxy 指向同一逻辑库。
 - **`ADMIN_UI_PUBLIC_PATH`**：公网前缀（线上 `/tokenhub/admin`）。只影响前端构建（资源路径、Router basename、浏览器请求），Node 始终以根路径提供服务，前缀由 nginx 剥离。**构建期生效**。
 

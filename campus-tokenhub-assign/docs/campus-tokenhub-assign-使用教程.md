@@ -572,7 +572,7 @@ cp .env.example .env
 openssl rand -base64 48     # SESSION_SECRET（≥32 字符）
 openssl rand -hex 24        # POSTGRES_PASSWORD（只用十六进制，避免破坏 DATABASE_URL）
 openssl rand -hex 12        # PORTAL_ADMIN_PASSWORD（人登录用的部署管理员口令）
-openssl rand -base64 18     # OCTAFUSE_ADMIN_PASSWORD（门户调网关 API 的服务账号）
+# OCTAFUSE_ADMIN_API_KEY 在网关后台「系统集成 → 集成密钥」创建后填入 .env
 ```
 
 最小可跑配置（裸机、单域名、nginx 入口）：
@@ -581,8 +581,7 @@ openssl rand -base64 18     # OCTAFUSE_ADMIN_PASSWORD（门户调网关 API 的�
 # --- 必须写在 env：基础设施与启动必需 ---
 SESSION_SECRET=<openssl rand -base64 48>
 POSTGRES_PASSWORD=<openssl rand -hex 24>
-OCTAFUSE_ADMIN_USERNAME=admin
-OCTAFUSE_ADMIN_PASSWORD=<强口令>
+OCTAFUSE_ADMIN_API_KEY=<网关后台「系统集成 → 集成密钥」签发>
 OCTAFUSE_EXTERNAL_SYSTEM=campus-tokenhub
 
 # --- 对外地址（都是浏览器访问的地址，带前缀）---
@@ -733,7 +732,7 @@ docker compose exec -T postgres psql -U octafuse -d octafuse -c \
 | ------------------------- | -------------------------------------------------------------------------- |
 | `SESSION_SECRET`          | 生产重新生成，不要复用本地 `.env`                                                       |
 | `POSTGRES_PASSWORD`       | 强口令；`docker compose config` 能看到真实值说明没漏                                     |
-| `OCTAFUSE_ADMIN_PASSWORD` | 强口令，不能用 `octafuse123` 之类默认值                                                |
+| `OCTAFUSE_ADMIN_API_KEY`  | 网关后台签发的集成密钥，不能用示例值；门户不再持管理员账密                                  |
 | `PUBLIC_BASE_URL`         | `https://` 实际域名，**含路径前缀**。留空会回退到 `Host` 头，可被伪造                             |
 | `COOKIE_SECURE`           | TLS 后必须 `true`，否则浏览器丢弃会话 Cookie                                            |
 | `NEXT_PUBLIC_PROXY_BASE`  | 必须 `https://`。这个地址由浏览器直连并携带 `Authorization: Bearer <Key>`，走 http 等于明文传 Key |
@@ -1550,7 +1549,7 @@ codebuddy -p "跑 npm run typecheck 和 npm test，把失败项按文件归类�
 | --------------------------------------- | ------------------------------------- |
 | `SESSION_SECRET`                        | ≥32 字符，签会话；两站互认必须相同                   |
 | `POSTGRES_PASSWORD`                     | 数据库口令，只用十六进制                          |
-| `OCTAFUSE_ADMIN_USERNAME` / `_PASSWORD` | 网关管理台账号，门户用它换 `admin_session`         |
+| `OCTAFUSE_ADMIN_API_KEY`                | 网关后台集成密钥，门户用它 Bearer 调 `/api/admin/*`  |
 | `OCTAFUSE_EXTERNAL_SYSTEM`              | 外部身份命名空间，如 `campus-tokenhub`，**无代码默认值** |
 | `PUBLIC_BASE_URL`                       | 对外根地址，含前缀；线上必填                        |
 
