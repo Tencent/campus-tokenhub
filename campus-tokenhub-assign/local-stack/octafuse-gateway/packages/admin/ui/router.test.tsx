@@ -160,8 +160,8 @@ describe('full route manifest', () => {
 	it('covers all 23 page sources from the baseline manifest', () => {
 		// 21 个内容页 + 根重定向 + 旧 OAuth 重定向。
 		const pageRoutes = ADMIN_UI_ROUTES.filter((route) => route.kind === 'page');
-		expect(pageRoutes).toHaveLength(21);
-		expect(ADMIN_UI_ROUTES).toHaveLength(23);
+		expect(pageRoutes).toHaveLength(22);
+		expect(ADMIN_UI_ROUTES).toHaveLength(24);
 	});
 });
 
