@@ -46,11 +46,19 @@ export async function POST(request: Request): Promise<NextResponse> {
       audit('provision.fail', {
         actor_email: session.email,
         actor_external_id: session.sub,
+        // 真实的开户失败原因（网关登录被拒 / 超时 / 上游 HTTP 码）必须留痕，
+        // 否则审计里只有一句 result=fail，等于没有线索（本次「门户与网关 admin
+        // 的 SESSION_SECRET 不一致 → 登录 403」就是这么被藏起来的）。
+        detail: result.error,
         result: 'fail',
         ip: clientIp(request.headers),
         ua: request.headers.get('user-agent'),
       });
-      throw new ApiError(502, '账号开通失败，请稍后重试', 'provision_failed');
+      throw new ApiError(502, '账号开通失败，请稍后重试', 'provision_failed', {
+        detail: result.error,
+        // 管理员看得到原因（排查配置/密钥不一致全靠它），学生侧只留泛化文案
+        exposeDetail: session.admin === true,
+      });
     }
 
     const token = await signSession(

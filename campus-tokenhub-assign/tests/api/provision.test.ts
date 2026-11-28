@@ -33,8 +33,7 @@ vi.mock('@/lib/audit', async (importOriginal) => {
 const baseEnv = {
   OCTAFUSE_ADMIN_BASE: 'http://gateway.test:8789',
   OCTAFUSE_PROXY_BASE: 'http://gateway.test:8790',
-  OCTAFUSE_ADMIN_USERNAME: 'admin',
-  OCTAFUSE_ADMIN_PASSWORD: 'T3st-Gateway-Pass-9f2c',
+  OCTAFUSE_ADMIN_API_KEY: 'sk-admin-9f2c4b7e6a1d8c530b4e2f7a9c6d1e8035',
   OCTAFUSE_EXTERNAL_SYSTEM: 'school-sso',
   SESSION_SECRET: 'K7q2mZ9rT4wX8bN3vF6hJ1sL5pY0cA2d',
 };
@@ -82,6 +81,43 @@ describe('POST /api/portal/provision', () => {
 
     expect(response.status).toBe(502);
     expect(mocks.audit).toHaveBeenCalledWith('provision.fail', expect.anything());
+  });
+
+  it('失败审计带上网关的真实原因（否则只有一句 result=fail）', async () => {
+    mocks.provisionUser.mockResolvedValue({ ok: false, error: '网关管理员登录失败' });
+    const { POST } = await import('@/app/api/portal/provision/route');
+
+    await POST(await request(null));
+
+    expect(mocks.audit).toHaveBeenCalledWith(
+      'provision.fail',
+      expect.objectContaining({ detail: '网关管理员登录失败', result: 'fail' })
+    );
+  });
+
+  it('管理员失败时响应体带 reason 与 request_id（排障靠这两个字段）', async () => {
+    mocks.provisionUser.mockResolvedValue({ ok: false, error: '网关管理员登录失败' });
+    const { POST } = await import('@/app/api/portal/provision/route');
+
+    const response = await POST(await request(null, true));
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ code: 'provision_failed', reason: '网关管理员登录失败' });
+    expect(body.request_id).toBeTruthy();
+    expect(response.headers.get('x-request-id')).toBe(body.request_id);
+  });
+
+  it('非管理员失败时不把网关原文透出去', async () => {
+    mocks.provisionUser.mockResolvedValue({ ok: false, error: 'connect ECONNREFUSED gateway-admin:8789' });
+    const { POST } = await import('@/app/api/portal/provision/route');
+
+    const response = await POST(await request(null, false));
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body.reason).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('ECONNREFUSED');
   });
 
   it('已开户时返回当前状态，不重复开户', async () => {
